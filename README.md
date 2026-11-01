@@ -51,3 +51,7 @@ A conversa opcional ainda usa respostas fixas identificadas. A visualização re
 `npm run build` usa o TypeScript instalado com o VS Code, ou `TYPESCRIPT_PATH`. `npm test` verifica equivalência entre integrador incremental e núcleo, eventos/potenciais, escolha, energia, ensino/feedback e mudança de pesos, timers, menu/preferências, criar/selecionar/apagar amigos, migração, isolamento, recarga, falhas de armazenamento e limpeza do microfone ao trocar, com mocks. Não ativa o microfone real. Hardware, permissão real e apresentação visual precisam de conferência pelo usuário.
 
 `companheiro/` e `README-python.md` preservam a versão anterior. `src/main.ts` e `src/pet.ts` continuam como integração desktop pausada, não usada pela interface web. Git exclusivamente local.
+
+## Atualização do menu
+
+Nome do amigo aparece primeiro; gestão/lista de amigos ficam abaixo de aparência/ativação futura. Endereço desta revisão: `http://127.0.0.1:4173/?v=menu-20261101-02`. O parâmetro não altera a origem do localStorage, portanto os amigos continuam os mesmos. O servidor entrega HTML, CSS e bundle atuais com `no-store/no-cache` e o cabeçalho `X-Companheiro-Version`. A versão anterior não aceitava query string (respondia 404); o novo servidor aceita o parâmetro de versão. A ordem anterior do menu ainda era amigos antes de nome: essa mudança visual não tinha sido aplicada, portanto não era possível vê-la apenas recarregando.

@@ -1,0 +1,28 @@
+{
+  "runtime": "v22.19.0",
+  "scope": "Núcleo em Node; exclui navegador, DOM, áudio e servidor",
+  "scenarios": [
+    {
+      "internalNeurons": 192,
+      "outputNeurons": 4,
+      "steps": 10000,
+      "elapsedMs": 641.51,
+      "stepsPerSecond": 15588,
+      "internalFiringFraction": 0.17509,
+      "heapDeltaAfterConstructionKiB": 35.73,
+      "heapDeltaAfterRunGC_KiB": 144.52,
+      "serializedBrainBytes": 17016
+    },
+    {
+      "internalNeurons": 192,
+      "outputNeurons": 16,
+      "steps": 10000,
+      "elapsedMs": 699.61,
+      "stepsPerSecond": 14294,
+      "internalFiringFraction": 0.17509,
+      "heapDeltaAfterConstructionKiB": 40.66,
+      "heapDeltaAfterRunGC_KiB": -25.95,
+      "serializedBrainBytes": 29202
+    }
+  ]
+}

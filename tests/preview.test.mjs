@@ -6,7 +6,7 @@ function preview(storage=new Map(),blocked=false){
  let document;
  class Element{
   constructor(){this.children=[];this.value='';this.textContent='';this.hidden=false;this.handlers={};this.attrs={};this.dataset={};this.style={};this.inert=false;this.classList={toggle(){}};}
-  append(...nodes){this.children.push(...nodes);}replaceChildren(){this.children=[];}setAttribute(k,v){this.attrs[k]=v;}
+  append(...nodes){this.children.push(...nodes);}replaceChildren(){this.children=[];}setAttribute(k,v){this.attrs[k]=v;}removeAttribute(k){delete this.attrs[k];}
   addEventListener(k,fn){this.handlers[k]=fn;}focus(){document.activeElement=this;}
   querySelector(){return null;}
   querySelectorAll(){return ['menu-close','companion-name','save-name','theme-light','theme-dark','nav-activity','nav-conversation'].map(id=>document.getElementById(id));}
@@ -16,7 +16,7 @@ function preview(storage=new Map(),blocked=false){
  for(const m of readFileSync('ui/index.html','utf8').matchAll(/<[^>]*id="([^"]+)"[^>]*>/g))document.getElementById(m[1]).hidden=/\bhidden\b/.test(m[0]);
  const localStorage={getItem(k){if(blocked)throw Error('bloqueado');return storage.get(k)??null;},setItem(k,v){if(blocked)throw Error('bloqueado');storage.set(k,v);},removeItem(k){storage.delete(k);}};
  const window={handlers:{},addEventListener(k,fn){this.handlers[k]=fn;}};const navigator={mediaDevices:{getUserMedia:async()=>{throw Object.assign(new Error('negada'),{name:'NotAllowedError'});}}};
- const timers=new Map();let timerId=0;const context=vm.createContext({document,localStorage,console,window,navigator,setInterval(fn){timers.set(++timerId,fn);return timerId;},clearInterval(id){timers.delete(id);}});
+ const timers=new Map();let timerId=0;const context=vm.createContext({document,localStorage,console,window,navigator,AbortController,setTimeout,clearTimeout,setInterval(fn){timers.set(++timerId,fn);return timerId;},clearInterval(id){timers.delete(id);}});
  vm.runInContext(readFileSync('dist/browser.js','utf8'),context);
  const submit=id=>elements.get(id).handlers.submit({preventDefault(){}});
  const key=(key,shiftKey=false)=>{let prevented=false;document.handlers.keydown({key,shiftKey,preventDefault(){prevented=true;}});return prevented;};
@@ -35,8 +35,8 @@ test('menu confina foco, fecha com Escape ou overlay e devolve foco ao botão',(
  p.key('Escape');assert.equal(el.get('drawer').hidden,true);assert.equal(el.get('main').inert,false);assert.equal(el.get('menu-open').attrs['aria-expanded'],'false');assert.equal(p.document.activeElement,el.get('menu-open'));el.get('menu-open').onclick();el.get('overlay').onclick();assert.equal(el.get('drawer').hidden,true);
 });
 test('visualização usa decisão e pesos da rede real; pausa limpa o timer',()=>{
- const p=preview();assert.equal(p.elements.get('choice').textContent,'Observando');assert.equal(p.timers.size,1);
- for(let i=0;i<16;i++)for(const fn of p.timers.values())fn();
+ const p=preview();assert.equal(p.elements.get('choice').textContent,'Observando');assert.equal(p.timers.size,2);
+ for(let i=0;i<80;i++)for(const fn of p.timers.values())fn();
  assert.notEqual(p.elements.get('choice').textContent,'Observando');assert.match(p.elements.get('network-metrics').textContent,/passo 80/);
  p.elements.get('reward-good').onclick();assert.match(p.elements.get('network-metrics').textContent,/1 atualizações/);p.elements.get('network-toggle').onclick();assert.equal(p.timers.size,0);assert.equal(p.storage.size,1);
 });
@@ -64,7 +64,7 @@ test('analisador usa amostras do stream e desconecta recursos ao encerrar',async
 });
 test('trocar amigo encerra microfone e timer e restaura aprendizado e conversa ao voltar',async()=>{
  const p=preview();let stops=0;const track={readyState:'live',stop(){stops++;},addEventListener(){}};p.navigator.mediaDevices.getUserMedia=async()=>({getTracks:()=>[track],getAudioTracks:()=>[track]});
- const initial=JSON.parse(p.storage.get('companheiro.friends.v1')).active;for(let i=0;i<16;i++)for(const fn of p.timers.values())fn();p.elements.get('reward-good').onclick();p.elements.get('chat-text').value='Conversa do primeiro amigo';p.submit('chat-form');p.elements.get('session-toggle').onclick();await new Promise(setImmediate);
+ const initial=JSON.parse(p.storage.get('companheiro.friends.v1')).active;for(let i=0;i<80;i++)for(const fn of p.timers.values())fn();p.elements.get('reward-good').onclick();p.elements.get('chat-text').value='Conversa do primeiro amigo';p.submit('chat-form');p.elements.get('session-toggle').onclick();await new Promise(setImmediate);
  p.elements.get('friend-create').onclick();p.elements.get('friend-new-name').value='Segundo';p.submit('friend-create-form');assert.equal(stops,1);assert.equal(p.timers.size,0);assert.equal(p.elements.get('mic-status').textContent,'Desligado');assert.equal(p.elements.get('messages').children.length,0);assert.match(p.elements.get('network-metrics').textContent,/0 atualizações/);
  p.elements.get('friend-list').children[0].onclick();assert.equal(p.timers.size,0);assert.equal(p.elements.get('messages').children[0].children[1].textContent,'Conversa do primeiro amigo');assert.match(p.elements.get('network-metrics').textContent,/1 atualizações/);assert.equal(JSON.parse(p.storage.get('companheiro.friends.v1')).active,initial);
 });
@@ -74,4 +74,9 @@ test('cancelar exclusão não modifica dados; último amigo apagado não retorna
 test('menu bloqueia quarto amigo e permite criar após exclusão confirmada',()=>{
  const p=preview();for(const name of ['Segundo','Terceiro']){p.elements.get('friend-create').onclick();p.elements.get('friend-new-name').value=name;p.submit('friend-create-form');}
  assert.equal(p.elements.get('friend-create').disabled,true);assert.equal(p.elements.get('friend-limit').hidden,false);const before=p.storage.get('companheiro.friends.v1');p.elements.get('friend-new-name').value='Quarto';p.submit('friend-create-form');assert.equal(p.storage.get('companheiro.friends.v1'),before);p.elements.get('friend-delete').onclick();p.elements.get('friend-delete-yes').onclick();assert.equal(p.elements.get('friend-create').disabled,false);p.elements.get('friend-create').onclick();p.elements.get('friend-new-name').value='Substituto';p.submit('friend-create-form');assert.equal(JSON.parse(p.storage.get('companheiro.friends.v1')).friends.length,3);
+});
+test('formulário salva habilidade, amplia rede e permite ensinar seleção real',()=>{
+ const p=preview();p.elements.get('skill-new').onclick();p.elements.get('skill-name').value='Pergunta local';let row=p.elements.get('skill-steps').children[0];row.children[1].value='Quer continuar?';row.children[1].oninput();p.submit('skill-form');const saved=JSON.parse(p.storage.get('companheiro.friends.v1'));assert.equal(saved.friends[0].skills.length,1);assert.equal(saved.friends[0].brain.weights.length,5);assert.equal(p.elements.get('skill-count').textContent,'5');assert.match(p.elements.get('neuron-count').textContent,/197 neurônios/);
+ p.elements.get('input-source').value='demo';p.elements.get('input-source').onchange();p.elements.get('teach-target').value='4';for(let i=0;i<8;i++)p.elements.get('teach').onclick();for(let i=0;i<80;i++)for(const fn of p.timers.values())fn();assert.equal(p.elements.get('choice').textContent,'Pergunta local');p.elements.get('review-selected').onclick();assert.equal(p.elements.get('execution-review').hidden,false);assert.match(p.elements.get('execution-plan').textContent,/Quer continuar/);
+ p.elements.get('friend-new-name').value='Outro';p.submit('friend-create-form');assert.equal(p.elements.get('skill-list').children.length,0);assert.equal(p.elements.get('skill-count').textContent,'4');
 });

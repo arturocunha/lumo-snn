@@ -26,8 +26,8 @@ test('feedback consome uma decisão e snapshots de perfil continuam válidos em 
 test('pausar ou encerrar não deixa intervalos em execução',()=>{
  const oldSet=globalThis.setInterval,oldClear=globalThis.clearInterval;const timers=new Map();let id=0;
  globalThis.setInterval=fn=>{timers.set(++id,fn);return id;};globalThis.clearInterval=i=>timers.delete(i);
- try{const live=new LiveNetwork(()=>{});live.start();live.start();assert.equal(timers.size,1);for(const fn of timers.values())fn();assert.equal(live.snapshot().frame.tick,5);live.stop();assert.equal(timers.size,0);live.stop();assert.equal(timers.size,0);}finally{globalThis.setInterval=oldSet;globalThis.clearInterval=oldClear;}
+ try{const live=new LiveNetwork(()=>{});live.start();live.start();assert.equal(timers.size,2);for(const fn of timers.values())fn();assert.equal(live.snapshot().frame.tick,1);live.stop();assert.equal(timers.size,0);live.stop();assert.equal(timers.size,0);}finally{globalThis.setInterval=oldSet;globalThis.clearInterval=oldClear;}
 });
 test('iniciativa depende de pesos e evidências; ensino sozinho não libera proposta',()=>{
- const live=new LiveNetwork(()=>{});live.setSource('demo','Conversa com página relevante');for(let i=0;i<8;i++)live.teach(2);live.advance(80);assert.equal(live.snapshot().decision.choice,2);assert.equal(live.snapshot().decision.effective,1);for(let i=0;i<3;i++){live.feedback(1);live.advance(80);}assert.equal(live.snapshot().decision.effective,2);
+ const live=new LiveNetwork(()=>{});live.setSource('demo','Conversa com página relevante');for(let i=0;i<8;i++)live.teach(3);live.advance(80);assert.equal(live.snapshot().decision.choice,3);assert.equal(live.snapshot().decision.effective,1);for(let i=0;i<3;i++){live.feedback(1);live.advance(80);}assert.equal(live.snapshot().decision.effective,3);
 });

@@ -8,6 +8,7 @@ export class LiveNetwork {
     tick = 0;
     windows = 0;
     timer = null;
+    displayTimer = null;
     source = 'idle';
     demoContext = 'Usuário ocupado';
     frame = null;
@@ -17,21 +18,23 @@ export class LiveNetwork {
         this.notify = notify;
         this.energy = energy;
         this.brain = brain;
-        this.simulation = new LIFSimulation(brain.weights);
+        this.simulation = new LIFSimulation(brain.weights, brain.readoutWeights, brain.temporal);
     }
     snapshot() { return { running: this.timer !== null, source: this.source, frame: this.frame, weights: this.brain.weights.map(row => [...row]), decision: this.decision, updates: this.brain.updates, window: this.windows, input: [...this.input] }; }
     start() { if (this.timer !== null)
-        return; this.timer = setInterval(() => { this.advance(5); }, 100); this.notify(this.snapshot()); }
-    stop() { if (this.timer !== null)
-        clearInterval(this.timer); this.timer = null; this.notify(this.snapshot()); }
+        return; this.timer = setInterval(() => { this.advance(1, false); }, 20); this.displayTimer = setInterval(() => this.notify(this.snapshot()), 100); this.notify(this.snapshot()); }
+    stop() { this.brain.temporal = this.simulation.temporal(); if (this.timer !== null)
+        clearInterval(this.timer); if (this.displayTimer !== null)
+        clearInterval(this.displayTimer); this.timer = null; this.displayTimer = null; this.notify(this.snapshot()); }
     setSource(source, context = this.demoContext) { if (source === 'demo' && !Object.hasOwn(contexts, context))
         throw Error('Entrada inválida'); this.source = source; this.demoContext = context; this.reset(); this.notify(this.snapshot()); }
-    reset() { this.tick = 0; this.simulation = new LIFSimulation(this.brain.weights); this.decision = null; this.frame = null; this.brain.pending = null; }
-    advance(steps = 5) {
+    refresh() { this.reset(); this.notify(this.snapshot()); }
+    reset() { this.tick = 0; this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.brain.temporal); this.decision = null; this.frame = null; this.brain.pending = null; }
+    advance(steps = 5, publish = true) {
         for (let i = 0; i < steps; i++) {
             if (this.tick === 80) {
                 this.tick = 0;
-                this.simulation = new LIFSimulation(this.brain.weights);
+                this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.simulation.temporal());
             }
             this.input = this.source === 'demo' ? contexts[this.demoContext] : this.source === 'audio' ? [1, 0, Math.min(1, Math.max(0, this.energy())), 0, 0, 0] : [1, 0, 0, 0, 0, 1];
             this.frame = this.simulation.step(this.input);
@@ -41,7 +44,9 @@ export class LiveNetwork {
                 this.decision = this.brain.complete(this.simulation.result(), this.source === 'demo' ? this.demoContext : this.source === 'audio' ? 'Áudio local' : 'Sem atividade informada');
             }
         }
-        this.notify(this.snapshot());
+        this.brain.temporal = this.simulation.temporal();
+        if (publish)
+            this.notify(this.snapshot());
     }
     feedback(reward) { if (!this.decision)
         throw Error('Aguarde uma decisão completa.'); this.brain.pending = this.decision; this.brain.feedback(reward); this.reset(); this.notify(this.snapshot()); }

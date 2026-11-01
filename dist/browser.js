@@ -1,5 +1,49 @@
+/** Reservatório LIF recorrente esparso e fixo; o readout plástico fica em core.ts. */
+const reservoirConfig = { version: 1, size: 192, indegree: 8, seed: 31 };
+function emptyReservoir() { return { voltage: Array(192).fill(0), spikes: Array(192).fill(0), refractory: Array(192).fill(0) }; }
+function validReservoirState(value) {
+    const state = value;
+    if (!state || !Array.isArray(state.voltage) || !Array.isArray(state.spikes) || !Array.isArray(state.refractory) || [state.voltage, state.spikes, state.refractory].some(row => row.length !== 192) || state.voltage.some(v => !Number.isFinite(v) || v < 0 || v >= 1) || state.spikes.some(v => v !== 0 && v !== 1) || state.refractory.some(v => !Number.isInteger(v) || v < 0 || v > 2))
+        throw Error('Estado temporal inválido');
+    return JSON.parse(JSON.stringify(state));
+}
+let seed = reservoirConfig.seed;
+function rng() { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; }
+const inputProjection = Array.from({ length: 192 }, (_, n) => Array.from({ length: 6 }, (_, i) => i === n % 6 ? .4 + rng() * .2 : rng() * .12));
+const recurrence = Array.from({ length: 192 }, (_, n) => { const used = new Set([n]); return Array.from({ length: 8 }, () => { let from = Math.floor(rng() * 192); while (used.has(from))
+    from = (from + 1) % 192; used.add(from); return { from, weight: from % 4 === 0 ? -(.08 + rng() * .06) : .025 + rng() * .045 }; }); });
+class Reservoir {
+    state;
+    constructor(state = emptyReservoir()) { this.state = validReservoirState(state); }
+    step(inputSpikes) {
+        const before = this.state, next = emptyReservoir();
+        for (let n = 0; n < 192; n++) {
+            if (before.refractory[n] > 0) {
+                next.refractory[n] = before.refractory[n] - 1;
+                continue;
+            }
+            let current = .025;
+            for (let i = 0; i < 6; i++)
+                current += inputProjection[n][i] * inputSpikes[i];
+            for (const edge of recurrence[n])
+                current += edge.weight * before.spikes[edge.from];
+            const v = Math.max(0, .9 * before.voltage[n] + current);
+            if (v >= 1) {
+                next.spikes[n] = 1;
+                next.refractory[n] = 2;
+            }
+            else
+                next.voltage[n] = v;
+        }
+        this.state = next;
+        return next;
+    }
+}
+function initialReadout(rows) { let s = 91; return Array.from({ length: rows }, () => Array.from({ length: 192 }, () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return .08 + .14 * s / 4294967296; })); }
+
+
 /** Rede LIF determinística, independente da interface e do runtime desktop. */
-const actions = ['aguardar', 'perguntar', 'propor_url'];
+const actions = ['ouvir', 'perguntar', 'tirar_duvidas', 'fazer'];
 const contexts = {
     'Conversa com página relevante': [1, 1, 1, 0, .5, 0],
     'Usuário ocupado': [1, 0, 0, 1, 0, 0],
@@ -8,48 +52,102 @@ const contexts = {
 };
 const features = ['Presença', 'Conversa', 'Página relevante', 'Ocupado', 'Pedido de ajuda', 'Silêncio'];
 function validateProfile(value) {
-    const p = value;
-    if (!p || p.version !== 1 || !Array.isArray(p.weights) || p.weights.length !== 3 || p.weights.some(row => !Array.isArray(row) || row.length !== 6 || row.some(w => typeof w !== 'number' || !Number.isFinite(w) || w < 0 || w > 1)) || !Number.isSafeInteger(p.updates) || p.updates < 0 || !p.evidence || typeof p.evidence !== 'object' || Array.isArray(p.evidence))
-        throw Error('Perfil inválido. O arquivo foi preservado.');
+    const raw = value;
+    if (!raw || ![1, 2, 3, 4].includes(raw.version) || !Array.isArray(raw.weights) || !Number.isSafeInteger(raw.updates) || raw.updates < 0 || !raw.evidence || typeof raw.evidence !== 'object' || Array.isArray(raw.evidence))
+        throw Error('Rede inválida. O arquivo foi preservado.');
+    let p = JSON.parse(JSON.stringify(raw));
+    if (p.version < 3) {
+        const legacyIds = p.version === 1 ? ['aguardar', 'perguntar', 'propor_url'] : p.actionIds;
+        if (!Array.isArray(legacyIds) || legacyIds.length !== p.weights.length || legacyIds.slice(0, 3).join(',') !== 'aguardar,perguntar,propor_url' || p.weights.length < 3 || p.weights.length > 15)
+            throw Error('Rede legada inválida');
+        p.weights.splice(2, 0, features.map(() => .12));
+        p.actionIds = [...actions, ...legacyIds.slice(3)];
+        for (const entries of Object.values(p.evidence)) {
+            if (!entries || typeof entries !== 'object' || Array.isArray(entries))
+                throw Error('Evidências inválidas');
+            const mapped = {};
+            for (const [key, counts] of Object.entries(entries)) {
+                if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= legacyIds.length)
+                    throw Error('Evidências inválidas');
+                mapped[String(Number(key) >= 2 ? Number(key) + 1 : Number(key))] = counts;
+            }
+            for (const key of Object.keys(entries))
+                delete entries[key];
+            Object.assign(entries, mapped);
+        }
+        p.version = 3;
+    }
+    if (p.weights.length < 4 || p.weights.length > 16 || p.weights.some(row => !Array.isArray(row) || row.length !== 6 || row.some(w => typeof w !== 'number' || !Number.isFinite(w) || w < 0 || w > 1)))
+        throw Error('Pesos inválidos');
+    if (p.version === 3) {
+        p.version = 4;
+        p.reservoir = { ...reservoirConfig };
+        p.readoutWeights = initialReadout(p.weights.length);
+        p.temporal = emptyReservoir();
+    }
+    if (JSON.stringify(p.reservoir) !== JSON.stringify(reservoirConfig) || !Array.isArray(p.readoutWeights) || p.readoutWeights.length !== p.weights.length || p.readoutWeights.some(row => !Array.isArray(row) || row.length !== 192 || row.some(w => !Number.isFinite(w) || w < 0 || w > 1)))
+        throw Error('Readout ou configuração do reservatório inválidos');
+    p.temporal = validReservoirState(p.temporal);
+    const ids = p.actionIds;
+    if (!Array.isArray(ids) || ids.length !== p.weights.length || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !id) || actions.some((id, i) => ids[i] !== id))
+        throw Error('Catálogo da rede inválido');
     for (const [context, entries] of Object.entries(p.evidence)) {
         if ((!Object.hasOwn(contexts, context) && context !== 'Áudio local') || !entries || typeof entries !== 'object' || Array.isArray(entries))
             throw Error('Evidências inválidas');
         for (const [action, counts] of Object.entries(entries))
-            if (!['0', '1', '2'].includes(action) || !Array.isArray(counts) || counts.length !== 2 || counts.some(n => !Number.isSafeInteger(n) || n < 0))
+            if (!/^(0|[1-9][0-9]*)$/.test(action) || Number(action) >= p.weights.length || !Array.isArray(counts) || counts.length !== 2 || counts.some(n => !Number.isSafeInteger(n) || n < 0))
                 throw Error('Feedback inválido');
     }
-    return JSON.parse(JSON.stringify(p));
+    return p;
 }
 class LIFSimulation {
     weights;
-    voltage = [0, 0, 0];
-    counts = [0, 0, 0];
+    voltage;
+    counts;
     phase = Array(6).fill(0);
     pre = Array(6).fill(0);
-    eligibility = actions.map(() => Array(6).fill(0));
+    eligibility;
+    hiddenTrace = Array(192).fill(0);
+    hiddenEligibility;
+    hiddenActivity = Array(192).fill(0);
+    reservoir;
+    readout;
     raster = [];
     input = Array(6).fill(0);
-    constructor(weights) {
+    constructor(weights, readout = initialReadout(weights.length), temporal = emptyReservoir()) {
         this.weights = weights;
+        this.reservoir = new Reservoir(temporal);
+        this.readout = readout;
+        this.hiddenEligibility = weights.map(() => Array(192).fill(0));
+        this.voltage = weights.map(() => 0);
+        this.counts = weights.map(() => 0);
+        this.eligibility = weights.map(() => Array(6).fill(0));
     }
     step(input) {
         if (input.length !== 6 || input.some(x => !Number.isFinite(x) || x < 0 || x > 1))
             throw Error('Contexto inválido');
         this.input = [...input];
         const inputSpikes = input.map((rate, i) => { this.phase[i] += rate; const spike = this.phase[i] >= 1 ? 1 : 0; this.phase[i] -= spike; this.pre[i] = .8 * this.pre[i] + spike; return spike; });
+        const hidden = this.reservoir.step(inputSpikes);
+        hidden.spikes.forEach((spike, n) => { this.hiddenTrace[n] = .9 * this.hiddenTrace[n] + spike; this.hiddenActivity[n] += spike; });
         const fired = [], beforeReset = [];
-        this.weights.forEach((row, j) => { this.voltage[j] = .85 * this.voltage[j] + row.reduce((s, w, i) => s + w * inputSpikes[i], 0); beforeReset.push(this.voltage[j]); if (this.voltage[j] >= 1) {
+        this.weights.forEach((row, j) => { this.voltage[j] = .85 * this.voltage[j] + .6 * row.reduce((s, w, i) => s + w * inputSpikes[i], 0) + 3 * this.readout[j].reduce((sum, w, n) => sum + w * hidden.spikes[n], 0) / 192; beforeReset.push(this.voltage[j]); if (this.voltage[j] >= 1) {
             this.counts[j]++;
             this.voltage[j] = 0;
             fired.push(j);
             this.pre.forEach((v, i) => this.eligibility[j][i] += v);
+            this.hiddenTrace.forEach((v, n) => this.hiddenEligibility[j][n] += v);
         } });
         this.raster.push(fired);
-        return { tick: this.raster.length, inputSpikes, fired, potentials: [...this.voltage], beforeReset, counts: [...this.counts] };
+        return { tick: this.raster.length, inputSpikes, fired, potentials: [...this.voltage], beforeReset, counts: [...this.counts], hidden: validReservoirState(hidden) };
     }
-    result() { const scores = this.counts.map((n, j) => n + this.voltage[j]); return { choice: scores.indexOf(Math.max(...scores)), scores, spikes: [...this.counts], raster: this.raster.map(row => [...row]), eligibility: this.eligibility.map(row => [...row]), features: [...this.input] }; }
+    temporal() { return validReservoirState(this.reservoir.state); }
+    result() { const scores = this.counts.map((n, j) => n + this.voltage[j]); return { choice: scores.indexOf(Math.max(...scores)), scores, spikes: [...this.counts], raster: this.raster.map(row => [...row]), eligibility: this.eligibility.map(row => [...row]), features: [...this.input], hiddenEligibility: this.hiddenEligibility.map(row => [...row]), hiddenActivity: [...this.hiddenActivity] }; }
 }
 class Brain {
+    actionIds = [...actions];
+    readoutWeights;
+    temporal = emptyReservoir();
     weights;
     evidence = {};
     updates = 0;
@@ -58,16 +156,22 @@ class Brain {
         let seed = 7;
         const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
         this.weights = actions.map(() => features.map(() => .08 + .2 * random()));
+        this.readoutWeights = initialReadout(this.weights.length);
         if (profile) {
             const p = validateProfile(profile);
             this.weights = p.weights;
+            this.readoutWeights = p.readoutWeights;
+            this.temporal = p.temporal;
+            this.actionIds = p.actionIds;
             this.evidence = p.evidence;
             this.updates = p.updates;
         }
     }
-    snapshot() { return validateProfile({ version: 1, weights: this.weights, evidence: this.evidence, updates: this.updates }); }
+    snapshot() { return validateProfile({ version: 4, reservoir: { ...reservoirConfig }, readoutWeights: this.readoutWeights, temporal: this.temporal, actionIds: this.actionIds, weights: this.weights, evidence: this.evidence, updates: this.updates }); }
+    addAction(id) { if (this.actionIds.includes(id) || this.weights.length >= 16 || !/^habilidade-[A-Za-z0-9-]{1,80}$/.test(id))
+        throw Error('Não é possível adicionar esta habilidade.'); this.actionIds.push(id); this.weights.push(features.map(() => .12)); this.readoutWeights.push(Array(192).fill(.12)); this.pending = null; }
     run(input) {
-        const simulation = new LIFSimulation(this.weights);
+        const simulation = new LIFSimulation(this.weights, this.readoutWeights);
         for (let i = 0; i < 80; i++)
             simulation.step(input);
         return simulation.result();
@@ -76,7 +180,7 @@ class Brain {
         const margin = result.scores[result.choice] - Math.max(...result.scores.filter((_, i) => i !== result.choice));
         const [good, bad] = this.evidence[context]?.[String(result.choice)] ?? [0, 0];
         const reliable = good >= 3 && good / Math.max(1, good + bad) >= .75 && margin >= 2;
-        return this.pending = { ...result, context, margin, reliable, effective: result.choice === 2 && !reliable ? 1 : result.choice };
+        return this.pending = { ...result, context, margin, reliable, effective: result.choice >= 3 && !reliable ? 1 : result.choice };
     }
     decide(context) {
         if (!Object.hasOwn(contexts, context))
@@ -89,6 +193,11 @@ class Brain {
             trace = r.features;
         const scale = Math.max(...trace, 1e-9);
         this.weights[target] = this.weights[target].map((w, i) => Math.min(1, Math.max(0, w + .075 * reward * trace[i] / scale)));
+        let hidden = r.hiddenEligibility[target];
+        if (!hidden.some(Boolean))
+            hidden = r.hiddenActivity;
+        const hiddenScale = Math.max(...hidden, 1e-9);
+        this.readoutWeights[target] = this.readoutWeights[target].map((w, n) => Math.max(0, Math.min(1, w + .10 * reward * hidden[n] / hiddenScale)));
         this.updates++;
     }
     feedback(reward) {
@@ -102,7 +211,7 @@ class Brain {
         this.pending = null;
     }
     teach(context, target) {
-        if (!Object.hasOwn(contexts, context) || !Number.isInteger(target) || target < 0 || target > 2)
+        if (!Object.hasOwn(contexts, context) || !Number.isInteger(target) || target < 0 || target >= this.weights.length)
             throw Error('Exemplo inválido');
         this.plasticity(this.run(contexts[context]), target, 1);
         this.pending = null;
@@ -137,6 +246,140 @@ function validateUrl(value) {
 function executeUrl(value, confirmed, opener) { const url = validateUrl(value); if (confirmed !== true)
     throw Error('Confirmação obrigatória'); opener(url); }
 
+/** Catálogo limitado de efeitos locais. Nada aqui interpreta fala ou chama modelos. */
+const baseActionIds = ['ouvir', 'perguntar', 'tirar_duvidas', 'fazer'];
+const maxCustomSkills = 12;
+function validateSkills(value) {
+    if (!Array.isArray(value) || value.length > maxCustomSkills)
+        throw Error('Limite de 12 habilidades por amigo.');
+    const ids = new Set();
+    for (const raw of value) {
+        if (!raw || typeof raw.id !== 'string' || !/^habilidade-[A-Za-z0-9-]{1,80}$/.test(raw.id) || ids.has(raw.id) || typeof raw.name !== 'string' || !raw.name.trim() || Array.from(raw.name).length > 40 || raw.origin !== 'ensino humano')
+            throw Error('Habilidade inválida');
+        ids.add(raw.id);
+    }
+    const skills = value;
+    for (const skill of skills)
+        compilePlan(skill.plan, skills, new Set([skill.id]));
+    return JSON.parse(JSON.stringify(skills));
+}
+/** Compila referências, rejeita ciclos/conflitos e limita custo antes de qualquer efeito. */
+function compilePlan(plan, catalog, ancestors = new Set()) {
+    let count = 0;
+    function walk(raw, depth, seen) {
+        if (!raw || typeof raw !== 'object' || ++count > 24 || depth > 6)
+            throw Error('Use até 24 etapas e no máximo 6 níveis.');
+        const step = raw;
+        if (step.kind === 'ref') {
+            if (seen.has(step.id))
+                throw Error('Ciclo entre habilidades não permitido.');
+            const skill = catalog.find(s => s.id === step.id);
+            if (!skill)
+                throw Error('Habilidade referenciada não encontrada.');
+            return walk(skill.plan, depth + 1, new Set([...seen, step.id]));
+        }
+        if (step.kind === 'sequence' || step.kind === 'parallel') {
+            if (!Array.isArray(step.steps) || step.steps.length < 1 || step.steps.length > 8)
+                throw Error('Um grupo precisa de 1 a 8 etapas.');
+            const children = step.steps.map(child => walk(child, depth + 1, seen));
+            const resources = new Set();
+            for (const child of children)
+                for (const resource of child.resources) {
+                    if (step.kind === 'parallel' && resources.has(resource))
+                        throw Error('Etapas paralelas disputam o mesmo recurso: ' + resource);
+                    resources.add(resource);
+                }
+            const duration = step.kind === 'sequence' ? children.reduce((sum, c) => sum + c.duration, 0) : Math.max(...children.map(c => c.duration));
+            if (duration > 30000)
+                throw Error('A habilidade deve durar no máximo 30 segundos.');
+            return { node: { kind: step.kind, steps: children.map(c => c.node) }, resources, duration };
+        }
+        if (step.kind === 'wait' || step.kind === 'observe_audio') {
+            if (!Number.isInteger(step.ms) || step.ms < 100 || step.ms > 10000)
+                throw Error('Duração: de 100 a 10000 ms.');
+            return { node: { kind: step.kind, ms: step.ms }, resources: new Set(step.kind === 'observe_audio' ? ['áudio'] : []), duration: step.ms };
+        }
+        if (step.kind === 'text' || step.kind === 'prompt' || step.kind === 'search_proposal') {
+            if (typeof step.text !== 'string' || !step.text.trim() || step.text.length > 500)
+                throw Error('Texto: de 1 a 500 caracteres.');
+            return { node: { kind: step.kind, text: step.text }, resources: new Set(['saída de texto']), duration: 0 };
+        }
+        throw Error('Capacidade indisponível.');
+    }
+    return walk(plan, 0, ancestors).node;
+}
+function basePlan(index, audioActive = false) {
+    if (index === 0)
+        return audioActive ? { kind: 'observe_audio', ms: 1000 } : { kind: 'prompt', text: 'Para ouvir áudio local, inicie o amigo e permita o microfone.' };
+    if (index === 1)
+        return { kind: 'prompt', text: 'Você gostaria de acrescentar alguma informação?' };
+    if (index === 2)
+        return { kind: 'prompt', text: 'O que preciso saber para ajudar? Ainda não interpreto a conversa sem um modelo conectado.' };
+    return { kind: 'prompt', text: 'O que você quer fazer? Não há ferramenta geral conectada. Você pode ensinar uma combinação de capacidades locais.' };
+}
+class SkillExecutor {
+    controller = null;
+    get active() { return this.controller !== null; }
+    cancel() { this.controller?.abort(); }
+    async run(plan, catalog, runtime) {
+        if (this.active)
+            throw Error('Já há uma habilidade em execução.');
+        const compiled = compilePlan(plan, catalog), controller = new AbortController();
+        this.controller = controller;
+        const signal = controller.signal;
+        const delay = (ms) => new Promise((resolve, reject) => { if (signal.aborted) {
+            reject(Error('Execução cancelada.'));
+            return;
+        } const cancel = () => { clearTimeout(timer); reject(Error('Execução cancelada.')); }; const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms); signal.addEventListener('abort', cancel, { once: true }); });
+        function checkAudio(step) { return step.kind === 'observe_audio' || (('steps' in step) && step.steps.some(checkAudio)); }
+        if (checkAudio(compiled) && !runtime.audioActive()) {
+            this.controller = null;
+            throw Error('Esta habilidade precisa do microfone já ativo. Inicie o amigo primeiro.');
+        }
+        async function execute(step) {
+            if (signal.aborted)
+                throw Error('Execução cancelada.');
+            if (step.kind === 'sequence') {
+                for (const child of step.steps)
+                    await execute(child);
+            }
+            else if (step.kind === 'parallel') {
+                const tasks = step.steps.map(execute);
+                try {
+                    await Promise.all(tasks);
+                }
+                catch (error) {
+                    controller.abort();
+                    await Promise.allSettled(tasks);
+                    throw error;
+                }
+            }
+            else if (step.kind === 'wait')
+                await delay(step.ms);
+            else if (step.kind === 'observe_audio') {
+                let sum = 0, samples = 0;
+                for (let elapsed = 0; elapsed < step.ms; elapsed += 100) {
+                    if (!runtime.audioActive())
+                        throw Error('O microfone foi encerrado.');
+                    sum += runtime.energy();
+                    samples++;
+                    await delay(Math.min(100, step.ms - elapsed));
+                }
+                runtime.report('Energia média local: ' + (sum / Math.max(1, samples)).toFixed(3) + ' (sem interpretação de fala).');
+            }
+            else if (step.kind === 'text' || step.kind === 'prompt' || step.kind === 'search_proposal')
+                runtime.emit(step.kind, step.text);
+        }
+        try {
+            await execute(compiled);
+        }
+        finally {
+            if (this.controller === controller)
+                this.controller = null;
+        }
+    }
+}
+
 
 /** Mesmo integrador usado em Brain.run. Passos independem do desenho e não usam aleatoriedade. */
 class LiveNetwork {
@@ -147,6 +390,7 @@ class LiveNetwork {
     tick = 0;
     windows = 0;
     timer = null;
+    displayTimer = null;
     source = 'idle';
     demoContext = 'Usuário ocupado';
     frame = null;
@@ -156,21 +400,23 @@ class LiveNetwork {
         this.notify = notify;
         this.energy = energy;
         this.brain = brain;
-        this.simulation = new LIFSimulation(brain.weights);
+        this.simulation = new LIFSimulation(brain.weights, brain.readoutWeights, brain.temporal);
     }
     snapshot() { return { running: this.timer !== null, source: this.source, frame: this.frame, weights: this.brain.weights.map(row => [...row]), decision: this.decision, updates: this.brain.updates, window: this.windows, input: [...this.input] }; }
     start() { if (this.timer !== null)
-        return; this.timer = setInterval(() => { this.advance(5); }, 100); this.notify(this.snapshot()); }
-    stop() { if (this.timer !== null)
-        clearInterval(this.timer); this.timer = null; this.notify(this.snapshot()); }
+        return; this.timer = setInterval(() => { this.advance(1, false); }, 20); this.displayTimer = setInterval(() => this.notify(this.snapshot()), 100); this.notify(this.snapshot()); }
+    stop() { this.brain.temporal = this.simulation.temporal(); if (this.timer !== null)
+        clearInterval(this.timer); if (this.displayTimer !== null)
+        clearInterval(this.displayTimer); this.timer = null; this.displayTimer = null; this.notify(this.snapshot()); }
     setSource(source, context = this.demoContext) { if (source === 'demo' && !Object.hasOwn(contexts, context))
         throw Error('Entrada inválida'); this.source = source; this.demoContext = context; this.reset(); this.notify(this.snapshot()); }
-    reset() { this.tick = 0; this.simulation = new LIFSimulation(this.brain.weights); this.decision = null; this.frame = null; this.brain.pending = null; }
-    advance(steps = 5) {
+    refresh() { this.reset(); this.notify(this.snapshot()); }
+    reset() { this.tick = 0; this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.brain.temporal); this.decision = null; this.frame = null; this.brain.pending = null; }
+    advance(steps = 5, publish = true) {
         for (let i = 0; i < steps; i++) {
             if (this.tick === 80) {
                 this.tick = 0;
-                this.simulation = new LIFSimulation(this.brain.weights);
+                this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.simulation.temporal());
             }
             this.input = this.source === 'demo' ? contexts[this.demoContext] : this.source === 'audio' ? [1, 0, Math.min(1, Math.max(0, this.energy())), 0, 0, 0] : [1, 0, 0, 0, 0, 1];
             this.frame = this.simulation.step(this.input);
@@ -180,13 +426,16 @@ class LiveNetwork {
                 this.decision = this.brain.complete(this.simulation.result(), this.source === 'demo' ? this.demoContext : this.source === 'audio' ? 'Áudio local' : 'Sem atividade informada');
             }
         }
-        this.notify(this.snapshot());
+        this.brain.temporal = this.simulation.temporal();
+        if (publish)
+            this.notify(this.snapshot());
     }
     feedback(reward) { if (!this.decision)
         throw Error('Aguarde uma decisão completa.'); this.brain.pending = this.decision; this.brain.feedback(reward); this.reset(); this.notify(this.snapshot()); }
     teach(target) { if (this.source !== 'demo')
         throw Error('Use uma entrada de demonstração para ensinar.'); this.brain.teach(this.demoContext, target); this.reset(); this.notify(this.snapshot()); }
 }
+
 
 
 const maxFriends = 3;
@@ -197,7 +446,7 @@ function friendName(value) { if (typeof value !== 'string' || !value.trim() || A
     throw Error('Use um nome de 1 a 32 caracteres.'); return value.trim().replace(/\s+/g, ' '); }
 function validFriends(value) {
     const data = value;
-    if (!data || data.version !== 1 || !Number.isSafeInteger(data.revision) || data.revision < 0 || !Array.isArray(data.friends) || !(data.active === null || typeof data.active === 'string'))
+    if (!data || ![1, 2, 3].includes(data.version) || !Number.isSafeInteger(data.revision) || data.revision < 0 || !Array.isArray(data.friends) || !(data.active === null || typeof data.active === 'string'))
         throw Error('Dados de amigos inválidos. Nada foi substituído.');
     const ids = new Set();
     for (const friend of data.friends) {
@@ -205,13 +454,16 @@ function validFriends(value) {
             throw Error('Amigo inválido');
         ids.add(friend.id);
         friendName(friend.name);
-        validateProfile(friend.brain);
-        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000))
+        friend.brain = validateProfile(friend.brain);
+        friend.skills = validateSkills(friend.skills ?? []);
+        if (friend.brain.actionIds.join(',') !== [...baseActionIds, ...friend.skills.map(s => s.id)].join(','))
+            throw Error('Habilidades e rede não correspondem.');
+        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000 || (m.source !== undefined && !['demo', 'local'].includes(m.source))))
             throw Error('Conversa inválida');
     }
     if (data.active !== null && !ids.has(data.active))
         throw Error('Amigo atual inválido');
-    return JSON.parse(JSON.stringify(data));
+    return JSON.parse(JSON.stringify({ ...data, version: 3 }));
 }
 class FriendsStore {
     storage;
@@ -222,8 +474,18 @@ class FriendsStore {
         this.storage = storage;
         this.expected = storage.getItem(friendsKey);
         if (this.expected !== null) {
-            this.data = validFriends(JSON.parse(this.expected));
-            this.migration = '';
+            const original = this.expected;
+            this.data = validFriends(JSON.parse(original));
+            if (JSON.stringify(this.data) !== original) {
+                if (storage.getItem('companheiro.backup.before-reservoir.v1') === null)
+                    storage.setItem('companheiro.backup.before-reservoir.v1', original);
+                if (storage.getItem('companheiro.backup.before-skills.v1') === null)
+                    storage.setItem('companheiro.backup.before-skills.v1', original);
+                this.commit(this.data);
+                this.migration = 'Amigos migrados para habilidades; pesos anteriores preservados em cópia local.';
+            }
+            else
+                this.migration = '';
             return;
         }
         const handoff = storage.getItem(handoffKey);
@@ -235,7 +497,7 @@ class FriendsStore {
             if (old.name)
                 legacyName = friendName(old.name);
         }
-        const friend = { id: this.id(), name: friendName(legacyName), brain: seed ?? new Brain().snapshot(), messages };
+        const friend = { id: this.id(), name: friendName(legacyName), brain: seed ?? new Brain().snapshot(), messages, skills: [] };
         this.data = validFriends({ version: 1, revision: 0, active: friend.id, friends: [friend], ...(handoff ? { migratedFriend: friend.id } : {}) });
         // A fonte legada é mantida; backup único antes da primeira migração.
         const legacy = storage.getItem('companheiro.preview.preferences.v1');
@@ -259,19 +521,32 @@ class FriendsStore {
         this.data = next;
     }
     create(name) { if (this.data.friends.length >= maxFriends)
-        throw Error(friendsLimitMessage); const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
+        throw Error(friendsLimitMessage); const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [], skills: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
     select(id) { if (!this.data.friends.some(f => f.id === id))
         throw Error('Amigo não encontrado'); this.commit({ ...this.snapshot(), active: id }); }
     rename(name) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)
         throw Error('Crie um amigo primeiro'); friend.name = friendName(name); this.commit(next); }
-    save(brain, messages) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)
-        throw Error('Nenhum amigo selecionado'); friend.brain = validateProfile(brain); friend.messages = messages.map(m => ({ ...m })); this.commit(next); }
+    save(brain, messages, skills) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)
+        throw Error('Nenhum amigo selecionado'); friend.brain = validateProfile(brain); if (skills)
+        friend.skills = validateSkills(skills); friend.messages = messages.map(m => ({ ...m })); this.commit(next); }
     delete(id, confirmed) { if (!confirmed)
-        return false; const next = this.snapshot(); if (!next.friends.some(f => f.id === id))
+        return false; if (this.storage.getItem(friendsKey) !== this.expected)
+        throw Error('Os amigos foram alterados em outra aba. Reabra esta página antes de continuar.'); const next = this.snapshot(); if (!next.friends.some(f => f.id === id))
         throw Error('Amigo não encontrado'); if (next.migratedFriend === id) {
         this.storage.removeItem(handoffKey);
         this.storage.removeItem('companheiro.backup.legacy-session.v1');
         delete next.migratedFriend;
+    } for (const key of ['companheiro.backup.before-skills.v1', 'companheiro.backup.before-reservoir.v1']) {
+        const backup = this.storage.getItem(key);
+        if (backup) {
+            const old = JSON.parse(backup);
+            if (Array.isArray(old.friends)) {
+                old.friends = old.friends.filter((f) => f.id !== id);
+                if (old.active === id)
+                    old.active = old.friends[0]?.id ?? null;
+                this.storage.setItem(key, JSON.stringify(old));
+            }
+        }
     } next.friends = next.friends.filter(f => f.id !== id); if (next.active === id)
         next.active = next.friends[0]?.id ?? null; this.commit(next); return true; }
 }
@@ -364,6 +639,8 @@ class MicrophoneSession {
 
 
 
+
+
 /** Prévia visual isolada. Somente nome e aparência usam armazenamento local. */
 const element = (id) => document.getElementById(id);
 let preferences = loadPreferences(), menuOpen = false;
@@ -375,6 +652,7 @@ catch (error) {
     loadError = `Não foi possível abrir os amigos: ${String(error)}. Os dados foram preservados.`;
 }
 let activeFriend = friends?.current() ?? null, messages = activeFriend?.messages ?? [];
+let skills = activeFriend?.skills ?? [];
 preferences.name = activeFriend?.name ?? 'Sem amigo';
 let pendingDelete = null;
 function applyPreferences() {
@@ -460,49 +738,54 @@ for (const id of ['nav-activity', 'nav-conversation'])
 function svg(tag, attrs, text) { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [key, value] of Object.entries(attrs))
     node.setAttribute(key, String(value)); if (text)
     node.textContent = text; return node; }
-const outputLabels = ['Aguardar', 'Perguntar', 'Sugerir uma página'];
+let outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.map(skill => skill.name)];
 const network = element('network');
 const inputNodes = [], outputNodes = [], potentialNodes = [], connectionNodes = [];
-let latest = null, inspected = null;
+let latest = null, inspected = null, inspectedHidden = null;
 const inputLabels = () => latest?.source === 'audio' ? ['Presença', 'Sem fala interpretada', 'Energia do áudio', 'Sem ocupação lida', 'Sem pedido interpretado', 'Sem silêncio inferido'] : ['Presença', 'Conversa', 'Página relevante', 'Ocupado', 'Pedido de ajuda', 'Silêncio'];
 function inspect(index) {
+    inspectedHidden = null;
     inspected = index;
     if (!latest)
         return;
     const frame = latest.frame;
-    element('neuron-inspect').textContent = index < 6 ? `${inputLabels()[index]} · entrada ${(latest.input[index] ?? 0).toFixed(3)} · disparo ${frame?.inputSpikes[index] ?? 0}` : `${outputLabels[index - 6]} · potencial ${(frame?.potentials[index - 6] ?? 0).toFixed(3)} / 1 · antes do reset ${(frame?.beforeReset[index - 6] ?? 0).toFixed(3)} · disparos na janela ${frame?.counts[index - 6] ?? 0}`;
+    element('neuron-inspect').textContent = index < 6 ? `${inputLabels()[index]} · entrada ${(latest.input[index] ?? 0).toFixed(3)} · disparo ${frame?.inputSpikes[index] ?? 0}` : `${outputLabels[index - 6]} · potencial ${(frame?.potentials[index - 6] ?? 0).toFixed(3)} / 1 · antes do reset ${(frame?.beforeReset[index - 6] ?? 0).toFixed(3)} · disparos na janela ${frame?.counts[index - 6] ?? 0} · 192 conexões de leitura plásticas · pesos iniciais ${live.brain.readoutWeights[index - 6].slice(0, 8).map(w => w.toFixed(3)).join(", ")} · média ${(live.brain.readoutWeights[index - 6].reduce((a, b) => a + b, 0) / 192).toFixed(3)}`;
 }
-for (let j = 0; j < 3; j++) {
-    connectionNodes[j] = [];
-    for (let i = 0; i < 6; i++) {
-        const line = svg('line', { x1: 175, y1: 20 + i * 40, x2: 500, y2: 40 + j * 80, class: 'connection' });
-        connectionNodes[j].push(line);
-        network.append(line);
+function buildNetwork() {
+    network.replaceChildren();
+    inputNodes.length = 0;
+    outputNodes.length = 0;
+    potentialNodes.length = 0;
+    connectionNodes.length = 0;
+    inputTexts.length = 0;
+    const height = Math.max(240, outputLabels.length * 44);
+    network.setAttribute('viewBox', `0 0 740 ${height}`);
+    network.style.height = height + 'px';
+    const inputY = (i) => 20 + i * (height - 40) / 5, outputY = (j) => 22 + j * (height - 44) / Math.max(1, outputLabels.length - 1);
+    for (let j = 0; j < outputLabels.length; j++) {
+        connectionNodes[j] = [];
+        for (let i = 0; i < 6; i++) {
+            const line = svg('line', { x1: 175, y1: inputY(i), x2: 500, y2: outputY(j), class: 'connection' });
+            connectionNodes[j].push(line);
+            network.append(line);
+        }
     }
+    for (let i = 0; i < 6; i++) {
+        const label = svg('text', { x: 0, y: inputY(i) + 4 }, inputLabels()[i]);
+        inputTexts.push(label);
+        network.append(label);
+        const node = svg('circle', { cx: 175, cy: inputY(i), r: 6, class: 'input-node', tabindex: 0, role: 'img' });
+        node.addEventListener('mouseenter', () => inspect(i));
+        node.addEventListener('focus', () => inspect(i));
+        inputNodes.push(node);
+        network.append(node);
+    }
+    outputLabels.forEach((label, j) => { const y = outputY(j); const ring = svg('circle', { cx: 500, cy: y, r: 16, class: 'potential-ring', fill: 'none', 'stroke-dasharray': '0 101', transform: `rotate(-90 500 ${y})` }); potentialNodes.push(ring); network.append(ring); const node = svg('circle', { cx: 500, cy: y, r: 8, class: 'output-node', tabindex: 0, role: 'img' }); node.addEventListener('mouseenter', () => inspect(j + 6)); node.addEventListener('focus', () => inspect(j + 6)); outputNodes.push(node); network.append(node); network.append(svg('text', { x: 530, y: y + 5 }, label.length > 25 ? label.slice(0, 23) + '…' : label)); });
 }
 const inputTexts = [];
-for (let i = 0; i < 6; i++) {
-    const label = svg('text', { x: 0, y: 24 + i * 40 }, inputLabels()[i]);
-    inputTexts.push(label);
-    network.append(label);
-    const node = svg('circle', { cx: 175, cy: 20 + i * 40, r: 6, class: 'input-node', tabindex: 0, role: 'img' });
-    node.addEventListener('mouseenter', () => inspect(i));
-    node.addEventListener('focus', () => inspect(i));
-    inputNodes.push(node);
-    network.append(node);
-}
-for (let j = 0; j < 3; j++) {
-    const ring = svg('circle', { cx: 500, cy: 40 + j * 80, r: 16, class: 'potential-ring', fill: 'none', 'stroke-dasharray': '0 101', transform: `rotate(-90 500 ${40 + j * 80})` });
-    potentialNodes.push(ring);
-    network.append(ring);
-    const node = svg('circle', { cx: 500, cy: 40 + j * 80, r: 8, class: 'output-node', tabindex: 0, role: 'img' });
-    node.addEventListener('mouseenter', () => inspect(j + 6));
-    node.addEventListener('focus', () => inspect(j + 6));
-    outputNodes.push(node);
-    network.append(node);
-    network.append(svg('text', { x: 530, y: 45 + j * 80 }, outputLabels[j]));
-}
 function renderNetwork(snapshot) {
+    if (connectionNodes.length !== snapshot.weights.length)
+        buildNetwork();
     latest = snapshot;
     const frame = snapshot.frame, d = snapshot.decision;
     const choiceLabel = d ? outputLabels[d.choice] : snapshot.running ? 'Observando' : 'Pausado';
@@ -510,15 +793,58 @@ function renderNetwork(snapshot) {
         element('choice').textContent = activeFriend ? choiceLabel : 'Crie um amigo';
     element('situation').textContent = `${snapshot.source === 'demo' ? 'Demonstração: ' + live.demoContext : snapshot.source === 'audio' ? 'Entrada real: energia do microfone' : 'Entrada fixa: sem atividade informada'}${snapshot.running ? '' : ' · pausada'}`;
     element('network-toggle').textContent = snapshot.running ? 'Pausar rede' : 'Retomar rede';
+    element('review-selected').disabled = !d || !activeFriend;
     element('reward-good').disabled = !d;
     element('reward-bad').disabled = !d;
     element('network-metrics').textContent = `Janela ${snapshot.window} · passo ${frame?.tick ?? 0}/80 · disparos ${frame?.counts.join(' / ') ?? '0 / 0 / 0'} · ${snapshot.updates} atualizações de pesos${d ? ' · saída após política: ' + outputLabels[d.effective] : ''}. Nenhuma ferramenta é executada.`;
     inputNodes.forEach((node, i) => { node.setAttribute('class', 'input-node' + (frame?.inputSpikes[i] ? ' fired' : '')); node.setAttribute('aria-label', `${inputLabels()[i]}: ${snapshot.input[i].toFixed(3)}`); inputTexts[i].textContent = inputLabels()[i]; });
     outputNodes.forEach((node, j) => { node.setAttribute('class', 'output-node' + (frame?.fired.includes(j) ? ' fired' : '')); node.setAttribute('aria-label', `${outputLabels[j]}: potencial ${(frame?.potentials[j] ?? 0).toFixed(3)}, ${frame?.counts[j] ?? 0} disparos`); potentialNodes[j].setAttribute('stroke-dasharray', `${Math.min(1, frame?.potentials[j] ?? 0) * 101} 101`); });
     connectionNodes.forEach((row, j) => row.forEach((line, i) => { const weight = snapshot.weights[j][i]; line.setAttribute('stroke-width', String(.4 + weight * 5)); line.setAttribute('opacity', String(.1 + weight * .7)); line.setAttribute('aria-label', `Peso ${weight.toFixed(4)}`); }));
-    if (inspected !== null)
+    drawReservoir(snapshot);
+    if (inspectedHidden !== null)
+        inspectHidden(inspectedHidden);
+    else if (inspected !== null)
         inspect(inspected);
 }
+function inspectHidden(index) {
+    inspectedHidden = index;
+    const state = latest?.frame?.hidden;
+    const edges = recurrence[index];
+    element('neuron-inspect').textContent = `Interno ${index + 1}/192 · potencial ${(state?.voltage[index] ?? 0).toFixed(3)} / 1 · disparo ${state?.spikes[index] ?? 0} · refratário ${state?.refractory[index] ?? 0} · entradas recorrentes fixas: ${edges.map(edge => `${edge.from + 1}:${edge.weight.toFixed(3)}`).join(', ')}`;
+}
+function drawReservoir(snapshot) {
+    const canvas = element('reservoir-view'), cr = canvas.getContext?.('2d');
+    if (!cr)
+        return;
+    cr.clearRect(0, 0, 600, 160);
+    const state = snapshot.frame?.hidden;
+    if (inspectedHidden !== null) {
+        const target = inspectedHidden;
+        for (const edge of recurrence[target]) {
+            cr.beginPath();
+            cr.moveTo((edge.from % 24) * 25 + 12, Math.floor(edge.from / 24) * 20 + 10);
+            cr.lineTo((target % 24) * 25 + 12, Math.floor(target / 24) * 20 + 10);
+            cr.strokeStyle = edge.weight < 0 ? '#b87979' : '#8f839f';
+            cr.lineWidth = Math.abs(edge.weight) * 12;
+            cr.stroke();
+        }
+    }
+    for (let i = 0; i < 192; i++) {
+        const x = (i % 24) * 25, y = Math.floor(i / 24) * 20;
+        cr.fillStyle = state?.spikes[i] ? '#ba9fdf' : `rgba(142,135,155,${.18 + (state?.voltage[i] ?? 0) * .65})`;
+        cr.fillRect(x + 3, y + 3, 18, 13);
+        if (i === inspectedHidden) {
+            cr.strokeStyle = '#9686ae';
+            cr.strokeRect(x + 1, y + 1, 22, 17);
+        }
+    }
+}
+element('reservoir-view').addEventListener('pointermove', event => { const canvas = element('reservoir-view'), rect = canvas.getBoundingClientRect(); const x = (event.clientX - rect.left) / rect.width * 600, y = (event.clientY - rect.top) / rect.height * 160; inspectHidden(Math.min(191, Math.max(0, Math.floor(y / 20) * 24 + Math.floor(x / 25)))); });
+element('reservoir-view').addEventListener('keydown', event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+    event.preventDefault();
+    const delta = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : event.key === 'ArrowUp' ? -24 : 24;
+    inspectHidden(Math.max(0, Math.min(191, (inspectedHidden ?? 0) + delta)));
+} });
 let analyser = null, audioContext = null, audioSource = null, audioSamples = null;
 function audioEnergy() { if (!analyser || !audioSamples)
     return 0; analyser.getFloatTimeDomainData(audioSamples); let sum = 0; for (const n of audioSamples)
@@ -544,8 +870,149 @@ catch (error) {
 element('reward-good').onclick = () => learning(() => live.feedback(1));
 element('reward-bad').onclick = () => learning(() => live.feedback(-1));
 element('teach').onclick = () => learning(() => live.teach(Number(element('teach-target').value)));
+const executor = new SkillExecutor();
+let draftSteps = [], pendingExecution = null;
+function renderSkills() {
+    element('skill-count').textContent = String(outputLabels.length);
+    element('neuron-count').textContent = `${192 + outputLabels.length} neurônios LIF: 192 internos e ${outputLabels.length} saídas. 6 canais de entrada, não contados como neurônios. Todos os 192 internos são mostrados; recorrência fixa e leitura plástica.`;
+    const target = element('teach-target');
+    target.replaceChildren();
+    outputLabels.forEach((label, index) => { const option = document.createElement('option'); option.value = String(index); option.textContent = label; target.append(option); });
+    const list = element('skill-list');
+    list.replaceChildren();
+    for (const skill of skills) {
+        const row = document.createElement('div');
+        row.className = 'skill-item';
+        row.textContent = skill.name + ' · ensino humano';
+        list.append(row);
+    }
+    element('skill-new').disabled = !activeFriend || skills.length >= 12;
+}
+function renderDraft() {
+    const container = element('skill-steps');
+    container.replaceChildren();
+    draftSteps.forEach((step, index) => {
+        const row = document.createElement('div');
+        row.className = 'skill-step';
+        const select = document.createElement('select');
+        select.setAttribute('aria-label', `Etapa ${index + 1}`);
+        const choices = [['wait', 'Aguardar (ms)'], ['text', 'Mostrar texto local'], ['prompt', 'Pedir informação'], ['search_proposal', 'Propor pesquisa (sem pesquisar)'], ['observe_audio', 'Observar energia de áudio (ms)'], ...skills.map(skill => ['ref:' + skill.id, skill.name])];
+        for (const [value, label] of choices) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            select.append(option);
+        }
+        select.value = step.kind;
+        const input = document.createElement('input');
+        input.value = step.value;
+        input.maxLength = 500;
+        input.setAttribute('aria-label', `Texto ou duração da etapa ${index + 1}`);
+        input.placeholder = step.kind === 'wait' || step.kind === 'observe_audio' ? 'Duração em ms' : 'Texto a mostrar';
+        input.hidden = step.kind.startsWith('ref:');
+        select.onchange = () => { step.kind = select.value; step.value = step.kind === 'wait' || step.kind === 'observe_audio' ? '500' : ''; renderDraft(); };
+        input.oninput = () => { step.value = input.value; };
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.setAttribute('aria-label', `Remover etapa ${index + 1}`);
+        remove.onclick = () => { draftSteps.splice(index, 1); renderDraft(); };
+        row.append(select, input, remove);
+        container.append(row);
+    });
+    element('skill-add-step').disabled = draftSteps.length >= 8;
+}
+element('skill-new').onclick = () => { if (!activeFriend)
+    return; draftSteps = [{ kind: 'prompt', value: '' }]; element('skill-form').hidden = false; element('skill-name').value = ''; renderDraft(); element('skill-name').focus(); };
+element('skill-add-step').onclick = () => { if (draftSteps.length < 8) {
+    draftSteps.push({ kind: 'wait', value: '500' });
+    renderDraft();
+} };
+element('skill-cancel').onclick = () => { element('skill-form').hidden = true; draftSteps = []; };
+element('skill-form').addEventListener('submit', event => {
+    event.preventDefault();
+    if (!activeFriend)
+        return;
+    try {
+        const name = element('skill-name').value.trim();
+        const steps = draftSteps.map(step => {
+            if (step.kind.startsWith('ref:'))
+                return { kind: 'ref', id: step.kind.slice(4) };
+            if (step.kind === 'wait' || step.kind === 'observe_audio')
+                return { kind: step.kind, ms: Number(step.value) };
+            if (step.kind === 'text' || step.kind === 'prompt' || step.kind === 'search_proposal')
+                return { kind: step.kind, text: step.value };
+            throw Error('Etapa inválida');
+        });
+        const skill = { id: 'habilidade-' + (globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)), name, origin: 'ensino humano', plan: { kind: element('skill-mode').value === 'parallel' ? 'parallel' : 'sequence', steps } };
+        const nextSkills = validateSkills([...skills, skill]);
+        const nextBrain = new Brain(live.brain.snapshot());
+        nextBrain.addAction(skill.id);
+        friends.save(nextBrain.snapshot(), messages, nextSkills);
+        skills = nextSkills;
+        live.brain = nextBrain;
+        outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.map(item => item.name)];
+        renderSkills();
+        buildNetwork();
+        live.refresh();
+        element('skill-form').hidden = true;
+        element('skill-status').textContent = 'Habilidade salva. Para ensinar quando usá-la, escolha Demonstração explícita em Detalhes da rede, selecione a habilidade e ensine exemplos.';
+    }
+    catch (error) {
+        element('skill-status').textContent = String(error);
+    }
+});
+function cancelExecution() { executor.cancel(); pendingExecution = null; element('execution-review').hidden = true; }
+function describePlan(step) {
+    if (step.kind === 'sequence' || step.kind === 'parallel')
+        return (step.kind === 'parallel' ? 'Ao mesmo tempo: ' : 'Em sequência: ') + step.steps.map(describePlan).join(' → ');
+    if (step.kind === 'wait')
+        return `aguardar ${step.ms} ms`;
+    if (step.kind === 'observe_audio')
+        return `observar energia local por ${step.ms} ms`;
+    if (step.kind === 'text')
+        return `mostrar “${step.text}”`;
+    if (step.kind === 'prompt')
+        return `perguntar “${step.text}”`;
+    if (step.kind === 'search_proposal')
+        return `mostrar proposta “${step.text}”`;
+    return 'habilidade referenciada';
+}
+element('review-selected').onclick = () => {
+    const decision = live.snapshot().decision;
+    if (!decision || !activeFriend)
+        return;
+    const index = decision.choice;
+    const plan = index < 4 ? basePlan(index, microphone.state === 'active') : skills[index - 4]?.plan;
+    if (!plan)
+        return;
+    pendingExecution = { friendId: activeFriend.id, plan: compilePlan(plan, skills), catalog: JSON.parse(JSON.stringify(skills)), name: outputLabels[index] };
+    element('skill-panel').setAttribute('open', '');
+    element('execution-review').hidden = false;
+    element('execution-plan').textContent = `${outputLabels[index]}: ${describePlan(pendingExecution.plan)}. Somente efeitos locais, sem modelo ou comandos gerais.`;
+};
+element('execution-cancel').onclick = () => { cancelExecution(); element('skill-status').textContent = 'Execução cancelada.'; };
+element('execute-skill').onclick = () => {
+    const pending = pendingExecution;
+    if (!pending || pending.friendId !== activeFriend?.id)
+        return;
+    pendingExecution = null;
+    element('execute-skill').disabled = true;
+    const friendId = pending.friendId;
+    void executor.run(pending.plan, pending.catalog, { audioActive: () => microphone.state === 'active' && activeFriend?.id === friendId, energy: audioEnergy, report: text => { if (activeFriend?.id === friendId)
+            element('skill-status').textContent = text; }, emit: (kind, text) => {
+            if (activeFriend?.id !== friendId)
+                return;
+            const label = kind === 'search_proposal' ? 'Proposta de pesquisa (não executada)' : kind === 'prompt' ? 'Pedido de informação' : 'Texto local';
+            messages.push({ user: false, text: `[${label}] ${text}`, source: 'local' });
+            addMessage(`[${label}] ${text}`, false, 'local');
+            persistFriend();
+        } }).then(() => { if (activeFriend?.id === friendId)
+        element('skill-status').textContent = 'Habilidade concluída. Avalie a escolha com ＋ ou −.'; }).catch(error => { if (activeFriend?.id === friendId)
+        element('skill-status').textContent = String(error); }).finally(() => { element('execute-skill').disabled = false; element('execution-review').hidden = true; });
+};
 function persistFriend() { if (friends && activeFriend)
-    friends.save(live.brain.snapshot(), messages); }
+    friends.save(live.brain.snapshot(), messages, skills); }
 function cancelFriendForms() { pendingDelete = null; element('friend-create-form').hidden = true; element('friend-delete-confirm').hidden = true; }
 function renderFriends() {
     element('friend-current').textContent = (activeFriend?.name ?? 'Nenhum amigo') + ' ⌄';
@@ -571,16 +1038,22 @@ function renderFriends() {
     }
 }
 function renderMessages() { element('messages').replaceChildren(); for (const message of messages)
-    addMessage(message.text, message.user); }
-function suspendFriend() { microphone.stop(); live.stop(); stopAudioAnalysis(); persistFriend(); }
+    addMessage(message.text, message.user, message.source); }
+function suspendFriend() { cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); persistFriend(); }
 function changeFriend(operation) {
     try {
         suspendFriend();
         operation();
         activeFriend = friends.current();
         messages = activeFriend?.messages ?? [];
+        skills = activeFriend?.skills ?? [];
+        outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.map(skill => skill.name)];
         preferences.name = activeFriend?.name ?? 'Sem amigo';
         live = new LiveNetwork(renderNetwork, activeFriend ? new Brain(activeFriend.brain) : undefined, audioEnergy);
+        draftSteps = [];
+        element('skill-form').hidden = true;
+        pendingExecution = null;
+        inspectedHidden = null;
         inspected = null;
         latest = null;
         element('input-source').value = 'idle';
@@ -590,6 +1063,8 @@ function changeFriend(operation) {
         applyPreferences();
         renderFriends();
         renderMessages();
+        renderSkills();
+        buildNetwork();
         renderNetwork(live.snapshot());
         element('friend-current').focus();
         element('status').textContent = activeFriend ? 'Amigo selecionado. Microfone desligado; inicie quando quiser.' : 'Nenhum amigo. Abra o menu para criar um novo.';
@@ -620,6 +1095,7 @@ element('friend-delete-cancel').onclick = () => { cancelFriendForms(); element('
 element('friend-delete-yes').onclick = () => { if (!pendingDelete)
     return; const id = pendingDelete.id; changeFriend(() => friends.delete(id, true)); element('friend-current').focus(); };
 window.addEventListener('storage', event => { if (event.key === 'companheiro.friends.v1') {
+    cancelExecution();
     microphone.stop();
     live.stop();
     stopAudioAnalysis();
@@ -627,7 +1103,7 @@ window.addEventListener('storage', event => { if (event.key === 'companheiro.fri
         element(id).disabled = true;
     element('status').textContent = 'Amigos alterados em outra aba. Reabra esta página para continuar sem sobrescrever dados.';
 } });
-function addMessage(text, user) {
+function addMessage(text, user, source = 'demo') {
     const container = element('messages'), message = document.createElement('div');
     message.className = `message ${user ? 'user' : 'companion'}`;
     const byline = document.createElement('div');
@@ -640,7 +1116,7 @@ function addMessage(text, user) {
     if (!user) {
         const note = document.createElement('span');
         note.className = 'message-type';
-        note.textContent = 'RESPOSTA SIMULADA';
+        note.textContent = source === 'local' ? 'AÇÃO LOCAL' : 'RESPOSTA SIMULADA';
         byline.append(note);
     }
     const bubble = document.createElement('div');
@@ -672,6 +1148,7 @@ element('chat-form').addEventListener('submit', event => {
 applyPreferences();
 renderFriends();
 renderMessages();
+renderSkills();
 if (activeFriend)
     live.start();
 else
@@ -697,8 +1174,10 @@ const microphone = new MicrophoneSession(async () => {
             element('input-source').value = 'idle';
             live.setSource('idle');
         }
-        if (state === 'off')
+        if (state === 'off') {
+            cancelExecution();
             live.stop();
+        }
     }
     element('mic-note').textContent = state === 'active' ? 'Captura local ativa nesta aba. Sem gravação, envio ou reconhecimento de voz.' : 'Microfone local. Sem gravação, envio ou reconhecimento de voz.';
 });
@@ -737,11 +1216,11 @@ element('session-toggle').onclick = () => {
     else
         microphone.stop();
 };
-window.addEventListener('pagehide', () => { microphone.stop(); live.stop(); stopAudioAnalysis(); try {
+window.addEventListener('pagehide', () => { cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); try {
     persistFriend();
 }
 catch { } });
-window.addEventListener('beforeunload', () => { microphone.stop(); live.stop(); stopAudioAnalysis(); try {
+window.addEventListener('beforeunload', () => { cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); try {
     persistFriend();
 }
 catch { } });

@@ -48,3 +48,7 @@ A versão Python permanece disponível em `companheiro/`, com instruções em `R
 `src/core.ts`, `src/main.ts` e `src/pet.ts` contêm uma migração desktop iniciada antes da mudança de prioridade. Não são usados pelo servidor e não estão validados como aplicativo final. GJS, GTK e WebKitGTK foram encontrados no sistema; nenhum Electron, pacote npm ou runtime adicional foi instalado. A integração nativa não deve ser tratada como entrega aprovada.
 
 Repositório exclusivamente local. Nenhuma publicação no GitHub.
+
+## Verificação desta entrega
+
+Compilação TypeScript concluída; 4 testes de interação com DOM simulado passaram. O endereço local respondeu HTTP 200. O Chrome informou encaminhamento da abertura para a sessão existente, mas emitiu também aviso do processo lançador; a visibilidade da aba não foi confirmada visualmente. Use o endereço acima se ela não aparecer. Não houve instalação de dependências; a pasta completa, incluindo Git e versões preservadas, tinha cerca de 828 KiB nesta medição.

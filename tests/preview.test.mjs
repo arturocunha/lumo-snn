@@ -8,6 +8,7 @@ class Element{
 }
 function preview(){
  const elements=new Map();const document={getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:()=>new Element(),createElementNS:()=>new Element(),querySelector:()=>null,body:new Element()};
+ for(const match of readFileSync('ui/index.html','utf8').matchAll(/id="([^"]+)"/g))document.getElementById(match[1]);
  const window={};const context=vm.createContext({window,document,Option:class{constructor(text,value){this.text=text;this.value=value;}},setTimeout:()=>0,console});
  vm.runInContext(readFileSync('dist/preview.js','utf8')+'\n'+readFileSync('dist/ui.js','utf8'),context);
  return {elements,document,window};

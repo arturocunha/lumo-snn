@@ -61,4 +61,10 @@ Próximos passos úteis: validar a experiência gráfica com o usuário, adicion
 
 ## Git
 
-Repositório Git local nesta pasta, com identidade já configurada no ambiente. Nenhuma publicação remota foi solicitada ou realizada. O VS Code foi solicitado pelo lançador CLI para abrir esta pasta; a chamada retornou com sucesso.
+Repositório Git local nesta pasta, com identidade já configurada no ambiente. Nenhuma publicação remota foi solicitada ou realizada. A primeira chamada ao VS Code dentro do isolamento retornou sucesso sem janela visível relatada pelo usuário. A segunda, fora do isolamento, criou a janela na sessão Wayland real. `code --status` confirmou “Window (companheiro - Visual Studio Code)” e a pasta carregada. Não houve inspeção visual da tela.
+
+Caso precise reabrir manualmente:
+
+```bash
+code --new-window /home/artur/Documents/Codex/2026-11-01/snn-desktop-companion/outputs/companheiro
+```

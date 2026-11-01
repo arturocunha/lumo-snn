@@ -1,6 +1,6 @@
 # Companheiro — prévia visual em TypeScript
 
-**Etapa atual: aprovar a interface web antes de integrar funcionalidades.** Conversa, escolhas e rede são demonstrações identificadas. Nada é salvo; nenhum modelo, SNN ou ferramenta está conectado à prévia. Não abre páginas externas nem cria personagem sobre o desktop.
+**Etapa atual: aprovar a interface web antes de integrar funcionalidades.** Conversa, escolhas e rede são demonstrações identificadas. Somente nome e preferência de aparência são salvos no armazenamento local do navegador; nenhum modelo, SNN, detector de voz ou ferramenta está conectado à prévia. Não abre páginas externas nem cria personagem sobre o desktop.
 
 ## Ver agora
 
@@ -18,18 +18,20 @@ Não precisa instalar pacotes para executar: usa Node.js e sua biblioteca padrã
 
 ## O que experimentar
 
-- Ver o personagem no cenário, ocultá-lo e mostrá-lo novamente dentro da página.
-- Escrever uma mensagem de teste; a resposta é fixa e identificada como demonstração.
-- Escolher uma situação, ver uma escolha simulada e testar os botões de feedback.
-- Explorar as conexões ilustrativas e os detalhes recolhidos da demonstração.
+- Atividade e decisão simuladas no topo, sem painel de personagem, perfil ou lateral fixa.
+- “Ver outra decisão” alterna três exemplos ilustrativos, sem aprendizado ou execução de ações.
+- Conversa abaixo, com campo de mensagem e respostas explicitamente simuladas.
+- Três pontos no canto superior esquerdo abrem um menu recolhível. Fecha pelo botão, fundo ou Escape; Tab permanece no menu enquanto ele está aberto.
+- Nome editável e modos claro/noturno no menu, persistidos somente neste navegador. Se o armazenamento estiver bloqueado, a preferência funciona na página e a limitação é informada.
+- A frase “hey, nome” no menu é só uma ideia configurada para o futuro: não há captura ou detecção de voz.
 
-O próximo passo depende do feedback visual do usuário. A conexão com aprendizado, persistência e shell desktop está pausada.
+Conversas e decisões não são salvas. O próximo passo depende do feedback visual do usuário. A conexão com aprendizado, persistência por perfil e shell desktop está pausada.
 
 ## Arquivos
 
 - `ui/index.html` e `ui/style.css`: estrutura e aparência.
 - `src/ui.ts`: renderização e eventos do painel.
-- `src/preview.ts`: dados e interações simulados, sem importar o núcleo SNN.
+- `src/preview.ts`: exemplos ilustrativos e preferências locais, sem importar o núcleo SNN.
 - `scripts/preview.mjs`: servidor local mínimo.
 - `dist/`: JavaScript compilado, incluído para execução sem ferramentas extras.
 - `tests/preview.test.mjs`: verificações da prévia, com DOM simulado.
@@ -51,4 +53,4 @@ Repositório exclusivamente local. Nenhuma publicação no GitHub.
 
 ## Verificação desta entrega
 
-Compilação TypeScript concluída; 4 testes de interação com DOM simulado passaram. O endereço local respondeu HTTP 200. O Chrome informou encaminhamento da abertura para a sessão existente, mas emitiu também aviso do processo lançador; a visibilidade da aba não foi confirmada visualmente. Use o endereço acima se ela não aparecer. Não houve instalação de dependências; a pasta completa, incluindo Git e versões preservadas, tinha cerca de 828 KiB nesta medição.
+Compilação TypeScript concluída; 6 testes de interação com DOM simulado passaram (persistência/recuperação de nome e tema, falhas no armazenamento, menu e foco, exemplos e conversa sem persistência). O endereço local respondeu HTTP 200. O Chrome informou encaminhamento da abertura para a sessão existente, mas emitiu também aviso do processo lançador; a visibilidade da aba não foi confirmada visualmente. Use o endereço acima se ela não aparecer. Não houve instalação de dependências; a pasta completa, incluindo Git e versões preservadas, tinha cerca de 828 KiB nesta medição.

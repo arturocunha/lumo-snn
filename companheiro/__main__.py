@@ -1,9 +1,11 @@
 import argparse
+import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 from .core import Brain, ACTIONS, FEATURES, CONTEXTS, profile_path
 from .actions import validate_url, open_url
 from .model import DemoModel
+from .sprite_process import SpriteProcess
 
 class App:
     def __init__(self, root, path):
@@ -29,7 +31,8 @@ class App:
         buttons = ttk.Frame(panel)
         buttons.pack(fill='x', pady=8)
         ttk.Button(buttons, text='Avaliar contexto', command=self.evaluate).pack(side='left')
-        ttk.Button(buttons, text='Sprite flutuante', command=self.floating).pack(side='left', padx=5)
+        self.sprite_button = ttk.Button(buttons, text='Mostrar personagem', command=self.floating)
+        self.sprite_button.pack(side='left', padx=5)
         self.periodic = tk.BooleanVar(value=False)
         ttk.Checkbutton(buttons, text='Reavaliar a cada 15 s', variable=self.periodic).pack(side='left')
         self.status = tk.StringVar(value='Avalie um contexto para observar os disparos e a escolha.')
@@ -142,31 +145,42 @@ class App:
         c.create_text(650, 240, text=f'Atualizações reais: {self.brain.updates}', fill='white', anchor='w')
 
     def floating(self):
-        if self.float and self.float.winfo_exists():
-            self.float.lift()
+        if self.float is not None:
+            self.float.close()
+            self.float = None
+            self.sprite_button.configure(text='Mostrar personagem')
             return
-        self.float = tk.Toplevel(self.root)
-        self.float.title('Companheiro • arraste para mover')
-        self.float.attributes('-topmost', True)
-        c = tk.Canvas(self.float, width=200, height=110, bg='#d9eef6')
-        c.pack()
-        c.create_text(100, 96, text='Sprite de demonstração')
-        def drag(event):
-            self.float.geometry(f'+{event.x_root-100}+{event.y_root-50}')
-        c.bind('<B1-Motion>', drag)
-        def animate(frame=0):
-            if not self.float or not self.float.winfo_exists():
-                return
-            c.delete('pet')
-            x = 100 + 45 * __import__('math').sin(frame / 20)
-            c.create_oval(x-20, 15, x+20, 55, fill='#a78bfa', tags='pet')
-            c.create_oval(x-10, 27, x-6, 31, fill='black', tags='pet')
-            c.create_oval(x+6, 27, x+10, 31, fill='black', tags='pet')
-            step = 5 if frame % 12 < 6 else -5
-            c.create_line(x-10, 53, x-12+step, 72, width=5, tags='pet')
-            c.create_line(x+10, 53, x+12-step, 72, width=5, tags='pet')
-            self.root.after(80, lambda: animate(frame+1))
-        animate()
+        try:
+            self.float = SpriteProcess()
+        except OSError as error:
+            messagebox.showerror('Personagem indisponível', str(error))
+            return
+        self.sprite_button.configure(text='Ocultar personagem')
+        self.sprite_ready = False
+        self.root.after(150, self.watch_sprite)
+
+    def watch_sprite(self):
+        if self.float is None:
+            return
+        code = self.float.poll()
+        if not self.sprite_ready:
+            for line in self.float.output.splitlines():
+                try:
+                    info = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(info, dict) and info.get('ready'):
+                    self.sprite_ready = True
+                    self.write(f'Personagem: RGBA {info["rgba"]} bits, sem decorações; arraste pelo desenho. Botão direito para ocultar.')
+        if code is not None:
+            output = self.float.output
+            self.float.close()
+            self.float = None
+            self.sprite_button.configure(text='Mostrar personagem')
+            if code != 0:
+                messagebox.showerror('Personagem indisponível', output or 'O processo gráfico não iniciou.')
+            return
+        self.root.after(150, self.watch_sprite)
 
     def tick(self):
         if self.periodic.get():
@@ -177,6 +191,9 @@ class App:
 
     def close(self):
         if self.save():
+            if self.float is not None:
+                self.float.close()
+                self.float = None
             self.root.destroy()
 
 

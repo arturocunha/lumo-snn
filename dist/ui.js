@@ -1,6 +1,6 @@
 import { LiveNetwork } from './live.js';
 import { Brain } from './core.js';
-import { FriendsStore } from './friends.js';
+import { FriendsStore, maxFriends, friendsLimitMessage } from './friends.js';
 /** Prévia visual isolada. Somente nome e aparência usam armazenamento local. */
 const element = (id) => document.getElementById(id);
 let preferences = loadPreferences(), menuOpen = false;
@@ -187,7 +187,12 @@ function cancelFriendForms() { pendingDelete = null; element('friend-create-form
 function renderFriends() {
     element('friend-current').textContent = (activeFriend?.name ?? 'Nenhum amigo') + ' ⌄';
     element('friend-delete').disabled = !activeFriend;
-    element('friend-create').disabled = !friends;
+    const atLimit = (friends?.snapshot().friends.length ?? 0) >= maxFriends;
+    element('friend-create').disabled = !friends || atLimit;
+    element('friend-limit').hidden = !atLimit;
+    element('friend-limit').textContent = atLimit ? friendsLimitMessage : '';
+    if (atLimit)
+        element('friend-create-form').hidden = true;
     for (const id of ['session-toggle', 'network-toggle', 'chat-text'])
         element(id).disabled = !activeFriend;
     element('teach').disabled = !activeFriend || live.source !== 'demo';
@@ -232,9 +237,14 @@ function changeFriend(operation) {
 }
 element('friend-current').onclick = () => { const open = element('friend-options').hidden; element('friend-options').hidden = !open; element('friend-current').setAttribute('aria-expanded', String(open)); if (!open)
     cancelFriendForms(); };
-element('friend-create').onclick = () => { cancelFriendForms(); element('friend-create-form').hidden = false; element('friend-new-name').value = ''; element('friend-new-name').focus(); };
+element('friend-create').onclick = () => { if (!friends || (friends.snapshot().friends.length >= maxFriends)) {
+    element('friend-status').textContent = friendsLimitMessage;
+    return;
+} cancelFriendForms(); element('friend-create-form').hidden = false; element('friend-new-name').value = ''; element('friend-new-name').focus(); };
 element('friend-create-cancel').onclick = () => { cancelFriendForms(); element('friend-create').focus(); };
 element('friend-create-form').addEventListener('submit', event => { event.preventDefault(); try {
+    if (!friends || friends.snapshot().friends.length >= maxFriends)
+        throw Error(friendsLimitMessage);
     const name = cleanName(element('friend-new-name').value);
     changeFriend(() => friends.create(name));
 }

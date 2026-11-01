@@ -23,3 +23,9 @@ test('falha de gravação não aplica criação ou exclusão só em memória',()
 test('outra aba não pode sobrescrever revisão mais recente',()=>{
  const s=storage(),first=new FriendsStore(s),second=new FriendsStore(s);first.create('Novo');assert.throws(()=>second.create('Antigo'),/outra aba/);assert.equal(new FriendsStore(s).snapshot().friends.length,2);
 });
+test('limite de três é aplicado no domínio sem gravar quarto; apagar libera uma vaga',()=>{
+ const s=storage(),store=new FriendsStore(s);store.create('Segundo');store.create('Terceiro');const raw=s.getItem(friendsKey);assert.throws(()=>store.create('Quarto'),/apague um dos amigos/);assert.equal(s.getItem(friendsKey),raw);assert.equal(store.snapshot().friends.length,3);store.delete(store.current().id,true);store.create('Substituto');assert.equal(store.snapshot().friends.length,3);
+});
+test('dados antigos acima de três são preservados, mas não aceitam novas criações',()=>{
+ const s=storage(),store=new FriendsStore(s);const data=store.snapshot();for(let i=0;i<3;i++)data.friends.push({...structuredClone(data.friends[0]),id:'legado-'+i,name:'Legado '+i});s.setItem(friendsKey,JSON.stringify(data));const loaded=new FriendsStore(s);const raw=s.getItem(friendsKey);assert.equal(loaded.snapshot().friends.length,4);assert.throws(()=>loaded.create('Novo'),/apague/);assert.equal(s.getItem(friendsKey),raw);loaded.delete(loaded.current().id,true);assert.throws(()=>loaded.create('Ainda cheio'),/apague/);loaded.delete(loaded.current().id,true);assert.doesNotThrow(()=>loaded.create('Liberado'));
+});

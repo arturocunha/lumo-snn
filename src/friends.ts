@@ -2,6 +2,8 @@ import {Brain,validateProfile,type Profile} from './core.js';
 export interface ChatMessage {user:boolean;text:string}
 export interface Friend {id:string;name:string;brain:Profile;messages:ChatMessage[]}
 export interface FriendsData {version:1;revision:number;active:string|null;friends:Friend[];migratedFriend?:string}
+export const maxFriends=3;
+export const friendsLimitMessage='Para criar outro, apague um dos amigos existentes.';
 export const friendsKey='companheiro.friends.v1';
 export const handoffKey='companheiro.preview.legacy-session.v1';
 interface LocalStore {getItem(key:string):string|null;setItem(key:string,value:string):void;removeItem(key:string):void}
@@ -36,7 +38,7 @@ export class FriendsStore {
   if(this.storage.getItem(friendsKey)!==this.expected)throw Error('Os amigos foram alterados em outra aba. Reabra esta página antes de continuar.');
   const next=validFriends({...data,revision:this.data.revision+1});const text=JSON.stringify(next);this.storage.setItem(friendsKey,text);this.expected=text;this.data=next;
  }
- create(name:string){const next=this.snapshot();const friend={id:this.id(),name:friendName(name),brain:new Brain().snapshot(),messages:[]};next.friends.push(friend);next.active=friend.id;this.commit(next);return this.current()!;}
+ create(name:string){if(this.data.friends.length>=maxFriends)throw Error(friendsLimitMessage);const next=this.snapshot();const friend={id:this.id(),name:friendName(name),brain:new Brain().snapshot(),messages:[]};next.friends.push(friend);next.active=friend.id;this.commit(next);return this.current()!;}
  select(id:string){if(!this.data.friends.some(f=>f.id===id))throw Error('Amigo não encontrado');this.commit({...this.snapshot(),active:id});}
  rename(name:string){const next=this.snapshot(),friend=next.friends.find(f=>f.id===next.active);if(!friend)throw Error('Crie um amigo primeiro');friend.name=friendName(name);this.commit(next);}
  save(brain:Profile,messages:ChatMessage[]){const next=this.snapshot(),friend=next.friends.find(f=>f.id===next.active);if(!friend)throw Error('Nenhum amigo selecionado');friend.brain=validateProfile(brain);friend.messages=messages.map(m=>({...m}));this.commit(next);}

@@ -20,7 +20,7 @@ O mesmo integrador implementa `Brain.run` e a simulação incremental da visuali
 
 ## Amigos independentes
 
-No menu, **AMIGO ATUAL** abre a lista, **Criar novo amigo** e **Apagar amigo**. Cada amigo tem identificador próprio, nome, pesos, avaliações de aprendizado e conversa local separados. A gravação ocorre após feedback, ensino, mensagens e antes de trocar/fechar. Selecionar ou reabrir restaura esses dados; os potenciais instantâneos e a janela de disparos recomeçam. Trocar/criar/apagar encerra microfone, analisador e timer; o amigo selecionado fica pausado até você iniciar ou retomar a rede.
+No menu, **AMIGO ATUAL** abre a lista, **Criar novo amigo** e **Apagar amigo**. É possível ter até três amigos; para criar outro, apague um dos existentes. Dados antigos com mais de três são preservados e bloqueiam novas criações até haver vaga. Cada amigo tem identificador próprio, nome, pesos, avaliações de aprendizado e conversa local separados. A gravação ocorre após feedback, ensino, mensagens e antes de trocar/fechar. Selecionar ou reabrir restaura esses dados; os potenciais instantâneos e a janela de disparos recomeçam. Trocar/criar/apagar encerra microfone, analisador e timer; o amigo selecionado fica pausado até você iniciar ou retomar a rede.
 
 Apagar pede confirmação com o nome e aviso de perda definitiva do aprendizado e da conversa. Cancelar não muda dados. O último amigo apagado deixa a lista vazia, até você criar outro; não é recriado automaticamente. O tema é global e não é apagado. Se houver cópia legada importada daquele amigo, a exclusão remove também essa cópia de aprendizado/conversa.
 

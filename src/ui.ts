@@ -1,6 +1,6 @@
 import {LiveNetwork,type LiveSnapshot} from './live.js';
 import {Brain} from './core.js';
-import {FriendsStore,type ChatMessage} from './friends.js';
+import {FriendsStore,maxFriends,friendsLimitMessage,type ChatMessage} from './friends.js';
 /** Prévia visual isolada. Somente nome e aparência usam armazenamento local. */
 const element=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id) as T;
 let preferences=loadPreferences(),menuOpen=false;
@@ -96,7 +96,10 @@ function cancelFriendForms(){pendingDelete=null;element('friend-create-form').hi
 function renderFriends(){
  element('friend-current').textContent=(activeFriend?.name??'Nenhum amigo')+' ⌄';
  element<HTMLButtonElement>('friend-delete').disabled=!activeFriend;
- element<HTMLButtonElement>('friend-create').disabled=!friends;
+ const atLimit=(friends?.snapshot().friends.length??0)>=maxFriends;
+ element<HTMLButtonElement>('friend-create').disabled=!friends||atLimit;
+ element('friend-limit').hidden=!atLimit;element('friend-limit').textContent=atLimit?friendsLimitMessage:'';
+ if(atLimit)element('friend-create-form').hidden=true;
  for(const id of ['session-toggle','network-toggle','chat-text'])element<HTMLButtonElement>(id).disabled=!activeFriend;
  element<HTMLButtonElement>('teach').disabled=!activeFriend||live.source!=='demo';
  const list=element('friend-list');list.replaceChildren();
@@ -111,9 +114,9 @@ function changeFriend(operation:()=>void){
  }catch(error){element('friend-status').textContent=String(error);}
 }
 element('friend-current').onclick=()=>{const open=element('friend-options').hidden;element('friend-options').hidden=!open;element('friend-current').setAttribute('aria-expanded',String(open));if(!open)cancelFriendForms();};
-element('friend-create').onclick=()=>{cancelFriendForms();element('friend-create-form').hidden=false;element<HTMLInputElement>('friend-new-name').value='';element('friend-new-name').focus();};
+element('friend-create').onclick=()=>{if(!friends||(friends.snapshot().friends.length>=maxFriends)){element('friend-status').textContent=friendsLimitMessage;return;}cancelFriendForms();element('friend-create-form').hidden=false;element<HTMLInputElement>('friend-new-name').value='';element('friend-new-name').focus();};
 element('friend-create-cancel').onclick=()=>{cancelFriendForms();element('friend-create').focus();};
-element('friend-create-form').addEventListener('submit',event=>{event.preventDefault();try{const name=cleanName(element<HTMLInputElement>('friend-new-name').value);changeFriend(()=>friends!.create(name));}catch(error){element('friend-status').textContent=String(error);}});
+element('friend-create-form').addEventListener('submit',event=>{event.preventDefault();try{if(!friends||friends.snapshot().friends.length>=maxFriends)throw Error(friendsLimitMessage);const name=cleanName(element<HTMLInputElement>('friend-new-name').value);changeFriend(()=>friends!.create(name));}catch(error){element('friend-status').textContent=String(error);}});
 element('friend-delete').onclick=()=>{if(!activeFriend)return;cancelFriendForms();pendingDelete={id:activeFriend.id,name:activeFriend.name};element('delete-warning').textContent=`Apagar o amigo “${activeFriend.name}”? O aprendizado e a conversa deste amigo serão perdidos definitivamente neste navegador. Os outros amigos e o tema serão mantidos.`;element('friend-delete-confirm').hidden=false;element('friend-delete-cancel').focus();};
 element('friend-delete-cancel').onclick=()=>{cancelFriendForms();element('friend-delete').focus();};
 element('friend-delete-yes').onclick=()=>{if(!pendingDelete)return;const id=pendingDelete.id;changeFriend(()=>friends!.delete(id,true));element('friend-current').focus();};

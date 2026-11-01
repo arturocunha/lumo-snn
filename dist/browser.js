@@ -189,6 +189,8 @@ class LiveNetwork {
 }
 
 
+const maxFriends = 3;
+const friendsLimitMessage = 'Para criar outro, apague um dos amigos existentes.';
 const friendsKey = 'companheiro.friends.v1';
 const handoffKey = 'companheiro.preview.legacy-session.v1';
 function friendName(value) { if (typeof value !== 'string' || !value.trim() || Array.from(value.trim()).length > 32 || /[\u0000-\u001f\u007f]/.test(value))
@@ -256,7 +258,8 @@ class FriendsStore {
         this.expected = text;
         this.data = next;
     }
-    create(name) { const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
+    create(name) { if (this.data.friends.length >= maxFriends)
+        throw Error(friendsLimitMessage); const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
     select(id) { if (!this.data.friends.some(f => f.id === id))
         throw Error('Amigo não encontrado'); this.commit({ ...this.snapshot(), active: id }); }
     rename(name) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)
@@ -547,7 +550,12 @@ function cancelFriendForms() { pendingDelete = null; element('friend-create-form
 function renderFriends() {
     element('friend-current').textContent = (activeFriend?.name ?? 'Nenhum amigo') + ' ⌄';
     element('friend-delete').disabled = !activeFriend;
-    element('friend-create').disabled = !friends;
+    const atLimit = (friends?.snapshot().friends.length ?? 0) >= maxFriends;
+    element('friend-create').disabled = !friends || atLimit;
+    element('friend-limit').hidden = !atLimit;
+    element('friend-limit').textContent = atLimit ? friendsLimitMessage : '';
+    if (atLimit)
+        element('friend-create-form').hidden = true;
     for (const id of ['session-toggle', 'network-toggle', 'chat-text'])
         element(id).disabled = !activeFriend;
     element('teach').disabled = !activeFriend || live.source !== 'demo';
@@ -592,9 +600,14 @@ function changeFriend(operation) {
 }
 element('friend-current').onclick = () => { const open = element('friend-options').hidden; element('friend-options').hidden = !open; element('friend-current').setAttribute('aria-expanded', String(open)); if (!open)
     cancelFriendForms(); };
-element('friend-create').onclick = () => { cancelFriendForms(); element('friend-create-form').hidden = false; element('friend-new-name').value = ''; element('friend-new-name').focus(); };
+element('friend-create').onclick = () => { if (!friends || (friends.snapshot().friends.length >= maxFriends)) {
+    element('friend-status').textContent = friendsLimitMessage;
+    return;
+} cancelFriendForms(); element('friend-create-form').hidden = false; element('friend-new-name').value = ''; element('friend-new-name').focus(); };
 element('friend-create-cancel').onclick = () => { cancelFriendForms(); element('friend-create').focus(); };
 element('friend-create-form').addEventListener('submit', event => { event.preventDefault(); try {
+    if (!friends || friends.snapshot().friends.length >= maxFriends)
+        throw Error(friendsLimitMessage);
     const name = cleanName(element('friend-new-name').value);
     changeFriend(() => friends.create(name));
 }

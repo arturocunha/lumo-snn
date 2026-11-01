@@ -1,4 +1,6 @@
 import { Brain, validateProfile } from './core.js';
+export const maxFriends = 3;
+export const friendsLimitMessage = 'Para criar outro, apague um dos amigos existentes.';
 export const friendsKey = 'companheiro.friends.v1';
 export const handoffKey = 'companheiro.preview.legacy-session.v1';
 function friendName(value) { if (typeof value !== 'string' || !value.trim() || Array.from(value.trim()).length > 32 || /[\u0000-\u001f\u007f]/.test(value))
@@ -66,7 +68,8 @@ export class FriendsStore {
         this.expected = text;
         this.data = next;
     }
-    create(name) { const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
+    create(name) { if (this.data.friends.length >= maxFriends)
+        throw Error(friendsLimitMessage); const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
     select(id) { if (!this.data.friends.some(f => f.id === id))
         throw Error('Amigo não encontrado'); this.commit({ ...this.snapshot(), active: id }); }
     rename(name) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)

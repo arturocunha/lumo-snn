@@ -76,10 +76,7 @@ function svg(tag, attrs, text) { const node = document.createElementNS('http://w
 function showDecision() {
     const example = decisionExamples[exampleIndex];
     element('choice').textContent = example.title;
-    element('choice-description').textContent = example.description;
     element('situation').textContent = example.situation;
-    element('decision-icon').textContent = example.icon;
-    element('sample-number').textContent = `0${exampleIndex + 1} / 03`;
     const network = element('network');
     network.replaceChildren();
     const inputs = ['Conversa', 'Atenção', 'Relevância', 'Momento'];
@@ -95,13 +92,7 @@ function addMessage(text, user) {
     message.className = `message ${user ? 'user' : 'companion'}`;
     const byline = document.createElement('div');
     byline.className = 'message-byline';
-    if (!user) {
-        const mark = document.createElement('span');
-        mark.className = 'message-mark';
-        mark.textContent = '◌';
-        mark.setAttribute('aria-hidden', 'true');
-        byline.append(mark);
-    }
+    if (!user) { }
     const author = document.createElement('span');
     author.textContent = user ? 'Você' : preferences.name;
     if (!user)
@@ -127,7 +118,26 @@ element('chat-form').addEventListener('submit', event => {
         return;
     addMessage(text, true);
     input.value = '';
-    addMessage('Estou aqui. Podemos ir uma coisa de cada vez. Esta é uma resposta simulada, só para você conhecer o espaço da conversa.', false);
+    addMessage('Estou aqui. Podemos ir uma coisa de cada vez.', false);
 });
 applyPreferences();
 showDecision();
+const microphone = new MicrophoneSession(async () => {
+    if (!navigator.mediaDevices?.getUserMedia)
+        throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
+    return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+}, (state, error) => {
+    const button = element('session-toggle');
+    button.textContent = state === 'active' ? 'Encerrar' : state === 'starting' ? 'Cancelar' : 'Iniciar companheiro';
+    element('mic-status').textContent = state === 'active' ? 'Microfone ativo' : state === 'starting' ? 'Aguardando permissão…' : 'Desligado';
+    element('mic-dot').classList.toggle('active', state === 'active');
+    element('mic-error').hidden = !error;
+    element('mic-error').textContent = error;
+    element('mic-note').textContent = state === 'active' ? 'Captura local ativa nesta aba. Sem gravação, envio ou reconhecimento de voz.' : 'Microfone local. Sem gravação, envio ou reconhecimento de voz.';
+});
+element('session-toggle').onclick = () => { if (microphone.state === 'off')
+    void microphone.start();
+else
+    microphone.stop(); };
+window.addEventListener('pagehide', () => microphone.stop());
+window.addEventListener('beforeunload', () => microphone.stop());

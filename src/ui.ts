@@ -40,7 +40,7 @@ document.addEventListener('keydown',event=>{
 for(const id of ['nav-activity','nav-conversation'])element(id).onclick=()=>setMenu(false);
 function svg(tag:string,attrs:Record<string,string|number>,text?:string){const node=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [key,value]of Object.entries(attrs))node.setAttribute(key,String(value));if(text)node.textContent=text;return node;}
 function showDecision(){
- const example=decisionExamples[exampleIndex];element('choice').textContent=example.title;element('choice-description').textContent=example.description;element('situation').textContent=example.situation;element('decision-icon').textContent=example.icon;element('sample-number').textContent=`0${exampleIndex+1} / 03`;
+ const example=decisionExamples[exampleIndex];element('choice').textContent=example.title;element('situation').textContent=example.situation;
  const network=element('network');network.replaceChildren();
  const inputs=['Conversa','Atenção','Relevância','Momento'];const outputs=['Aguardar','Perguntar','Sugerir uma página'];
  illustrativeWeights.forEach((row,j)=>inputs.forEach((_,i)=>network.append(svg('line',{x1:160,y1:35+i*55,x2:500,y2:45+j*75,class:'connection','stroke-width':.6+row[i]*5,opacity:j===example.choice?.75:.23}))));
@@ -51,13 +51,26 @@ element('next-decision').onclick=()=>{exampleIndex=(exampleIndex+1)%decisionExam
 function addMessage(text:string,user:boolean){
  const container=element('messages'),message=document.createElement('div');message.className=`message ${user?'user':'companion'}`;
  const byline=document.createElement('div');byline.className='message-byline';
- if(!user){const mark=document.createElement('span');mark.className='message-mark';mark.textContent='◌';mark.setAttribute('aria-hidden','true');byline.append(mark);}
+ if(!user){}
  const author=document.createElement('span');author.textContent=user?'Você':preferences.name;if(!user)author.setAttribute('data-companion-name','');byline.append(author);
  if(!user){const note=document.createElement('span');note.className='message-type';note.textContent='RESPOSTA SIMULADA';byline.append(note);}
  const bubble=document.createElement('div');bubble.className='bubble';bubble.textContent=text;message.append(byline,bubble);container.append(message);container.scrollTop=container.scrollHeight;
 }
 element('chat-form').addEventListener('submit',event=>{
  event.preventDefault();const input=element<HTMLInputElement>('chat-text'),text=input.value.trim();if(!text)return;
- addMessage(text,true);input.value='';addMessage('Estou aqui. Podemos ir uma coisa de cada vez. Esta é uma resposta simulada, só para você conhecer o espaço da conversa.',false);
+ addMessage(text,true);input.value='';addMessage('Estou aqui. Podemos ir uma coisa de cada vez.',false);
 });
 applyPreferences();showDecision();
+const microphone=new MicrophoneSession(async()=>{
+ if(!navigator.mediaDevices?.getUserMedia)throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
+ return navigator.mediaDevices.getUserMedia({audio:true,video:false});
+},(state,error)=>{
+ const button=element<HTMLButtonElement>('session-toggle');button.textContent=state==='active'?'Encerrar':state==='starting'?'Cancelar':'Iniciar companheiro';
+ element('mic-status').textContent=state==='active'?'Microfone ativo':state==='starting'?'Aguardando permissão…':'Desligado';
+ element('mic-dot').classList.toggle('active',state==='active');
+ element('mic-error').hidden=!error;element('mic-error').textContent=error;
+ element('mic-note').textContent=state==='active'?'Captura local ativa nesta aba. Sem gravação, envio ou reconhecimento de voz.':'Microfone local. Sem gravação, envio ou reconhecimento de voz.';
+});
+element('session-toggle').onclick=()=>{if(microphone.state==='off')void microphone.start();else microphone.stop();};
+window.addEventListener('pagehide',()=>microphone.stop());
+window.addEventListener('beforeunload',()=>microphone.stop());

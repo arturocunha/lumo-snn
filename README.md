@@ -1,56 +1,33 @@
-# Companheiro — prévia visual em TypeScript
+# Companheiro — prévia TypeScript
 
-**Etapa atual: aprovar a interface web antes de integrar funcionalidades.** Conversa, escolhas e rede são demonstrações identificadas. Somente nome e preferência de aparência são salvos no armazenamento local do navegador; nenhum modelo, SNN, detector de voz ou ferramenta está conectado à prévia. Não abre páginas externas nem cria personagem sobre o desktop.
+Etapa atual: aprovar a interface e o fluxo. Não há SNN, modelo de linguagem, reconhecimento de voz ou automação conectados.
 
-## Ver agora
+## Abrir
 
-Abra **http://127.0.0.1:4173** enquanto o servidor estiver rodando.
+**http://127.0.0.1:4173**
 
-Nesta pasta:
+Nesta pasta, execute `npm run preview`. Para parar o servidor no terminal: `Ctrl+C`. O servidor atende somente em `127.0.0.1`, sem CDN ou dependências npm instaladas.
 
-```bash
-npm run preview
-```
+## O que é real
 
-Depois abra o endereço acima no navegador. Para mudar a porta: `PORT=4174 npm run preview`. Para parar o servidor no terminal: `Ctrl+C`.
+**Iniciar companheiro** solicita acesso ao microfone após o clique e a permissão do navegador. Enquanto o estado indicar **Microfone ativo**, a aba mantém um stream local aberto. **Encerrar** para todos os tracks. Sair/recarregar a página também encerra a captura. Durante a solicitação, **Cancelar** invalida a sessão e para qualquer stream que chegar depois; o navegador pode manter seu próprio prompt de permissão aberto.
 
-Não precisa instalar pacotes para executar: usa Node.js e sua biblioteca padrão. O servidor escuta somente em `127.0.0.1` e serve somente a prévia. CSS, desenhos e fontes do sistema são locais; não há CDN, telemetria ou modelo externo.
+Não há gravação, armazenamento, envio, reprodução ou análise de áudio. Capturar o microfone não significa reconhecer fala ou responder por voz. A sessão depende da aba e do navegador; não é um serviço Ubuntu em segundo plano. Permissão negada, falta de dispositivo, acesso indisponível e desconexão retornam ao estado desligado com uma mensagem.
 
-## O que experimentar
+Nome e aparência são salvos no `localStorage` deste navegador. O noturno usa preto/cinza/grafite neutros. O menu mantém foco por teclado, fecha por Escape, botão ou fundo e devolve o foco ao botão de três barras. A frase “hey, nome” é uma configuração de intenção futura, sem detecção implementada.
 
-- Atividade e decisão simuladas no topo, sem painel de personagem, perfil ou lateral fixa.
-- “Ver outra decisão” alterna três exemplos ilustrativos, sem aprendizado ou execução de ações.
-- Conversa abaixo, com campo de mensagem e respostas explicitamente simuladas.
-- Três pontos no canto superior esquerdo abrem um menu recolhível. Fecha pelo botão, fundo ou Escape; Tab permanece no menu enquanto ele está aberto.
-- Nome editável e modos claro/noturno no menu, persistidos somente neste navegador. Se o armazenamento estiver bloqueado, a preferência funciona na página e a limitação é informada.
-- A frase “hey, nome” no menu é só uma ideia configurada para o futuro: não há captura ou detecção de voz.
+## O que é simulado
 
-Conversas e decisões não são salvas. O próximo passo depende do feedback visual do usuário. A conexão com aprendizado, persistência por perfil e shell desktop está pausada.
+As decisões e conexões no alto são ilustrações; “Outro exemplo” alterna três exemplos fixos. A conversa por texto fica recolhida e é opcional; suas respostas são fixas. Nem mensagens nem decisões são salvas. Nenhuma ferramenta ou página externa é aberta.
 
-## Arquivos
+## Desenvolvimento e verificação
 
-- `ui/index.html` e `ui/style.css`: estrutura e aparência.
-- `src/ui.ts`: renderização e eventos do painel.
-- `src/preview.ts`: exemplos ilustrativos e preferências locais, sem importar o núcleo SNN.
-- `scripts/preview.mjs`: servidor local mínimo.
-- `dist/`: JavaScript compilado, incluído para execução sem ferramentas extras.
-- `tests/preview.test.mjs`: verificações da prévia, com DOM simulado.
+- `ui/index.html`, `ui/style.css`: apresentação.
+- `src/ui.ts`: fluxo, controles e renderização.
+- `src/preview.ts`: preferências, exemplos e ciclo de captura do microfone.
+- `scripts/preview.mjs`: servidor local.
+- `dist/`: JavaScript compilado incluído para execução sem compilador.
 
-```bash
-npm run build
-npm test
-```
+`npm run build` usa o TypeScript já instalado com o VS Code desta máquina (ou `TYPESCRIPT_PATH` para outro compilador). `npm test` cobre preferências/menu/conversa e o ciclo do microfone com mocks: início por clique, parada, permissão negada, falta de dispositivo, falha de acesso, desconexão e corridas de cancelamento. Os testes não ligam o microfone real. O hardware, permissões reais e a apresentação visual precisam ser conferidos pelo usuário no Chrome.
 
-A compilação usa o TypeScript já incluído no VS Code desta máquina, sem instalar dependências. Em outra máquina, pode-se fornecer `TYPESCRIPT_PATH` para uma instalação do compilador. O código compilado já está incluído. Testes do DOM simulado não substituem avaliação visual no navegador.
-
-## Trabalho preservado
-
-A versão Python permanece disponível em `companheiro/`, com instruções em `README-python.md`, e no histórico Git. Os perfis pessoais existentes não foram lidos ou alterados pela prévia web.
-
-`src/core.ts`, `src/main.ts` e `src/pet.ts` contêm uma migração desktop iniciada antes da mudança de prioridade. Não são usados pelo servidor e não estão validados como aplicativo final. GJS, GTK e WebKitGTK foram encontrados no sistema; nenhum Electron, pacote npm ou runtime adicional foi instalado. A integração nativa não deve ser tratada como entrega aprovada.
-
-Repositório exclusivamente local. Nenhuma publicação no GitHub.
-
-## Verificação desta entrega
-
-Compilação TypeScript concluída; 6 testes de interação com DOM simulado passaram (persistência/recuperação de nome e tema, falhas no armazenamento, menu e foco, exemplos e conversa sem persistência). O endereço local respondeu HTTP 200. O Chrome informou encaminhamento da abertura para a sessão existente, mas emitiu também aviso do processo lançador; a visibilidade da aba não foi confirmada visualmente. Use o endereço acima se ela não aparecer. Não houve instalação de dependências; a pasta completa, incluindo Git e versões preservadas, tinha cerca de 828 KiB nesta medição.
+A versão anterior Python permanece em `companheiro/`, com instruções em `README-python.md`, e no Git. `src/core.ts`, `src/main.ts` e `src/pet.ts` são trabalho de migração desktop pausado, não usado pela prévia nem validado como entrega final. Nenhum perfil pessoal foi modificado. Não há publicação remota.

@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 function preview(storage=new Map(),blocked=false){
  let document;
  class Element{
-  constructor(){this.children=[];this.value='';this.textContent='';this.hidden=false;this.handlers={};this.attrs={};this.dataset={};this.style={};this.inert=false;}
+  constructor(){this.children=[];this.value='';this.textContent='';this.hidden=false;this.handlers={};this.attrs={};this.dataset={};this.style={};this.inert=false;this.classList={toggle(){}};}
   append(...nodes){this.children.push(...nodes);}replaceChildren(){this.children=[];}setAttribute(k,v){this.attrs[k]=v;}
   addEventListener(k,fn){this.handlers[k]=fn;}focus(){document.activeElement=this;}
   querySelectorAll(){return ['menu-close','companion-name','save-name','theme-light','theme-dark','nav-activity','nav-conversation'].map(id=>document.getElementById(id));}
@@ -14,11 +14,12 @@ function preview(storage=new Map(),blocked=false){
  document={handlers:{},getElementById(id){if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll(){return [...named,...[...elements.values()].flatMap(el=>el.children.flatMap(message=>message.children?.[0]?.children?.filter(n=>Object.hasOwn(n.attrs,'data-companion-name'))??[]))];},body:new Element(),documentElement:new Element(),addEventListener(k,fn){this.handlers[k]=fn;}};
  for(const m of readFileSync('ui/index.html','utf8').matchAll(/id="([^"]+)"/g))document.getElementById(m[1]);
  const localStorage={getItem(k){if(blocked)throw Error('bloqueado');return storage.get(k)??null;},setItem(k,v){if(blocked)throw Error('bloqueado');storage.set(k,v);}};
- const context=vm.createContext({document,localStorage,console});
+ const window={handlers:{},addEventListener(k,fn){this.handlers[k]=fn;}};const navigator={mediaDevices:{getUserMedia:async()=>{throw Object.assign(new Error('negada'),{name:'NotAllowedError'});}}};
+ const context=vm.createContext({document,localStorage,console,window,navigator});
  vm.runInContext(readFileSync('dist/preview.js','utf8')+'\n'+readFileSync('dist/ui.js','utf8'),context);
  const submit=id=>elements.get(id).handlers.submit({preventDefault(){}});
  const key=(key,shiftKey=false)=>{let prevented=false;document.handlers.keydown({key,shiftKey,preventDefault(){prevented=true;}});return prevented;};
- return {elements,document,named,storage,submit,key};
+ return {elements,document,named,storage,submit,key,window,navigator};
 }
 test('nome e tema persistem e são recuperados em uma nova visita',()=>{
  const p=preview();p.elements.get('companion-name').value='  Aurora  ';p.submit('name-form');p.elements.get('theme-dark').onclick();assert.equal(p.named[0].textContent,'Aurora');assert.equal(p.document.documentElement.dataset.theme,'dark');
@@ -37,8 +38,12 @@ test('decisões ilustrativas alternam sem aprendizado, ferramentas ou persistên
 });
 test('conversa usa texto seguro, nome escolhido e resposta identificada, sem salvar mensagens',()=>{
  const p=preview();p.elements.get('companion-name').value='Nilo';p.submit('name-form');const saved=[...p.storage.values()][0];p.elements.get('chat-text').value='<img src=x onerror=alert(1)>';p.submit('chat-form');const messages=p.elements.get('messages').children;
- assert.equal(messages[0].children[1].textContent,'<img src=x onerror=alert(1)>');assert.equal(messages[1].children[0].children[1].textContent,'Nilo');assert.equal(messages[1].children[0].children[2].textContent,'RESPOSTA SIMULADA');assert.match(messages[1].children[1].textContent,/simulada/);assert.equal([...p.storage.values()][0],saved);assert.equal(p.elements.get('chat-text').value,'');
+ assert.equal(messages[0].children[1].textContent,'<img src=x onerror=alert(1)>');assert.equal(messages[1].children[0].children[0].textContent,'Nilo');assert.equal(messages[1].children[0].children[1].textContent,'RESPOSTA SIMULADA');assert.equal([...p.storage.values()][0],saved);assert.equal(p.elements.get('chat-text').value,'');
 });
 test('preferências inválidas não impedem abrir a prévia',()=>{
  const p=preview(new Map([['companheiro.preview.preferences.v1','{invalido']]));assert.equal(p.named[0].textContent,'Companheiro');assert.equal(p.document.documentElement.dataset.theme,'light');
+});
+test('controle principal inicia só por clique e encerra ao sair da página',async()=>{
+ const p=preview();let requests=0,stops=0;const makeStream=()=>{const track={readyState:'live',stop(){stops++;},addEventListener(){}};return {getTracks:()=>[track],getAudioTracks:()=>[track]};};p.navigator.mediaDevices.getUserMedia=async options=>{assert.deepEqual(JSON.parse(JSON.stringify(options)),{audio:true,video:false});requests++;return makeStream();};assert.equal(requests,0);
+ p.elements.get('session-toggle').onclick();await new Promise(setImmediate);assert.equal(requests,1);assert.equal(p.elements.get('mic-status').textContent,'Microfone ativo');assert.equal(p.elements.get('session-toggle').textContent,'Encerrar');p.window.handlers.pagehide();assert.equal(stops,1);assert.equal(p.elements.get('mic-status').textContent,'Desligado');p.elements.get('session-toggle').onclick();await new Promise(setImmediate);p.window.handlers.beforeunload();assert.equal(stops,2);
 });

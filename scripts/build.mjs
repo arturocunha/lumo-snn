@@ -13,5 +13,5 @@ if(diagnostics.length){console.error(ts.formatDiagnosticsWithColorAndContext(dia
 program.emit();console.log(`TypeScript ${ts.version}: compilação concluída.`);
 // Bundle local sem dependências: estes quatro módulos não têm importações dinâmicas.
 const {writeFileSync}=await import('node:fs');
-const browser=['core','live','preview','ui'].map(name=>readFileSync(`dist/${name}.js`,'utf8').replace(/^import .+ from ['"].+['"];?\r?$/gm,'').replace(/^export /gm,'')).join('\n');
+const browser=['core','live','friends','preview','ui'].map(name=>readFileSync(`dist/${name}.js`,'utf8').replace(/^import .+ from ['"].+['"];?\r?$/gm,'').replace(/^export /gm,'')).join('\n');
 writeFileSync('dist/browser.js',browser);

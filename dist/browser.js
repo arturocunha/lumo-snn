@@ -188,6 +188,91 @@ class LiveNetwork {
         throw Error('Use uma entrada de demonstração para ensinar.'); this.brain.teach(this.demoContext, target); this.reset(); this.notify(this.snapshot()); }
 }
 
+
+const friendsKey = 'companheiro.friends.v1';
+const handoffKey = 'companheiro.preview.legacy-session.v1';
+function friendName(value) { if (typeof value !== 'string' || !value.trim() || Array.from(value.trim()).length > 32 || /[\u0000-\u001f\u007f]/.test(value))
+    throw Error('Use um nome de 1 a 32 caracteres.'); return value.trim().replace(/\s+/g, ' '); }
+function validFriends(value) {
+    const data = value;
+    if (!data || data.version !== 1 || !Number.isSafeInteger(data.revision) || data.revision < 0 || !Array.isArray(data.friends) || !(data.active === null || typeof data.active === 'string'))
+        throw Error('Dados de amigos inválidos. Nada foi substituído.');
+    const ids = new Set();
+    for (const friend of data.friends) {
+        if (!friend || typeof friend.id !== 'string' || !friend.id || ids.has(friend.id))
+            throw Error('Amigo inválido');
+        ids.add(friend.id);
+        friendName(friend.name);
+        validateProfile(friend.brain);
+        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000))
+            throw Error('Conversa inválida');
+    }
+    if (data.active !== null && !ids.has(data.active))
+        throw Error('Amigo atual inválido');
+    return JSON.parse(JSON.stringify(data));
+}
+class FriendsStore {
+    storage;
+    data;
+    expected;
+    migration;
+    constructor(storage, legacyName = 'Companheiro', seed) {
+        this.storage = storage;
+        this.expected = storage.getItem(friendsKey);
+        if (this.expected !== null) {
+            this.data = validFriends(JSON.parse(this.expected));
+            this.migration = '';
+            return;
+        }
+        const handoff = storage.getItem(handoffKey);
+        let messages = [];
+        if (handoff) {
+            const old = JSON.parse(handoff);
+            seed = validateProfile(old.brain);
+            messages = old.messages ?? [];
+            if (old.name)
+                legacyName = friendName(old.name);
+        }
+        const friend = { id: this.id(), name: friendName(legacyName), brain: seed ?? new Brain().snapshot(), messages };
+        this.data = validFriends({ version: 1, revision: 0, active: friend.id, friends: [friend], ...(handoff ? { migratedFriend: friend.id } : {}) });
+        // A fonte legada é mantida; backup único antes da primeira migração.
+        const legacy = storage.getItem('companheiro.preview.preferences.v1');
+        if (legacy && storage.getItem('companheiro.backup.preferences.v1') === null)
+            storage.setItem('companheiro.backup.preferences.v1', legacy);
+        if (handoff && storage.getItem('companheiro.backup.legacy-session.v1') === null)
+            storage.setItem('companheiro.backup.legacy-session.v1', handoff);
+        this.migration = handoff ? 'Amigo anterior e aprendizado importados.' : legacy ? 'Nome anterior preservado. A versão anterior mantinha pesos apenas em memória; eles só podem ser importados antes de recarregar a aba.' : '';
+        this.commit(this.data);
+    }
+    id() { return globalThis.crypto?.randomUUID?.() ?? `amigo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`; }
+    snapshot() { return validFriends(this.data); }
+    current() { const friend = this.data.friends.find(f => f.id === this.data.active); return friend ? JSON.parse(JSON.stringify(friend)) : null; }
+    commit(data) {
+        if (this.storage.getItem(friendsKey) !== this.expected)
+            throw Error('Os amigos foram alterados em outra aba. Reabra esta página antes de continuar.');
+        const next = validFriends({ ...data, revision: this.data.revision + 1 });
+        const text = JSON.stringify(next);
+        this.storage.setItem(friendsKey, text);
+        this.expected = text;
+        this.data = next;
+    }
+    create(name) { const next = this.snapshot(); const friend = { id: this.id(), name: friendName(name), brain: new Brain().snapshot(), messages: [] }; next.friends.push(friend); next.active = friend.id; this.commit(next); return this.current(); }
+    select(id) { if (!this.data.friends.some(f => f.id === id))
+        throw Error('Amigo não encontrado'); this.commit({ ...this.snapshot(), active: id }); }
+    rename(name) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)
+        throw Error('Crie um amigo primeiro'); friend.name = friendName(name); this.commit(next); }
+    save(brain, messages) { const next = this.snapshot(), friend = next.friends.find(f => f.id === next.active); if (!friend)
+        throw Error('Nenhum amigo selecionado'); friend.brain = validateProfile(brain); friend.messages = messages.map(m => ({ ...m })); this.commit(next); }
+    delete(id, confirmed) { if (!confirmed)
+        return false; const next = this.snapshot(); if (!next.friends.some(f => f.id === id))
+        throw Error('Amigo não encontrado'); if (next.migratedFriend === id) {
+        this.storage.removeItem(handoffKey);
+        this.storage.removeItem('companheiro.backup.legacy-session.v1');
+        delete next.migratedFriend;
+    } next.friends = next.friends.filter(f => f.id !== id); if (next.active === id)
+        next.active = next.friends[0]?.id ?? null; this.commit(next); return true; }
+}
+
 "use strict";
 const preferenceKey = 'companheiro.preview.preferences.v1';
 function cleanName(value) {
@@ -274,14 +359,27 @@ class MicrophoneSession {
 }
 
 
+
+
 /** Prévia visual isolada. Somente nome e aparência usam armazenamento local. */
 const element = (id) => document.getElementById(id);
 let preferences = loadPreferences(), menuOpen = false;
+let friends = null, loadError = '';
+try {
+    friends = new FriendsStore(localStorage, preferences.name);
+}
+catch (error) {
+    loadError = `Não foi possível abrir os amigos: ${String(error)}. Os dados foram preservados.`;
+}
+let activeFriend = friends?.current() ?? null, messages = activeFriend?.messages ?? [];
+preferences.name = activeFriend?.name ?? 'Sem amigo';
+let pendingDelete = null;
 function applyPreferences() {
     document.documentElement.dataset.theme = preferences.theme;
     document.title = `${preferences.name} · prévia`;
     document.querySelectorAll('[data-companion-name]').forEach(node => node.textContent = preferences.name);
-    element('companion-name').value = preferences.name;
+    element('companion-name').value = activeFriend?.name ?? '';
+    element('name-form').hidden = !activeFriend;
     element('theme-light').setAttribute('aria-pressed', String(preferences.theme === 'light'));
     element('theme-dark').setAttribute('aria-pressed', String(preferences.theme === 'dark'));
 }
@@ -296,10 +394,14 @@ element('theme-dark').onclick = () => setTheme('dark');
 element('name-form').addEventListener('submit', event => {
     event.preventDefault();
     try {
-        preferences = { ...preferences, name: cleanName(element('companion-name').value) };
+        if (!friends)
+            throw Error(loadError);
+        friends.rename(cleanName(element('companion-name').value));
+        activeFriend = friends.current();
+        preferences.name = activeFriend.name;
         applyPreferences();
-        const saved = storePreference('Nome atualizado. A conversa continua simulada.');
-        element('name-status').textContent = saved ? 'Nome salvo neste navegador.' : 'Nome alterado, mas não foi possível salvar neste navegador.';
+        renderFriends();
+        element('name-status').textContent = 'Nome do amigo salvo neste navegador.';
     }
     catch (error) {
         element('name-status').textContent = error instanceof Error ? error.message : String(error);
@@ -307,6 +409,8 @@ element('name-form').addEventListener('submit', event => {
     }
 });
 function setMenu(open) {
+    if (!open)
+        cancelFriendForms();
     menuOpen = open;
     element('drawer').hidden = !open;
     element('overlay').hidden = !open;
@@ -327,11 +431,16 @@ document.addEventListener('keydown', event => {
         return;
     if (event.key === 'Escape') {
         event.preventDefault();
-        setMenu(false);
+        if (!element('friend-delete-confirm').hidden || !element('friend-create-form').hidden) {
+            cancelFriendForms();
+            element('friend-current').focus();
+        }
+        else
+            setMenu(false);
         return;
     }
     if (event.key === 'Tab') {
-        const focusable = Array.from(element('drawer').querySelectorAll('button:not([disabled]), input:not([disabled]), a[href]'));
+        const focusable = Array.from(element('drawer').querySelectorAll('button:not([disabled]), input:not([disabled]), a[href]')).filter(node => !node.closest?.('[hidden]'));
         const first = focusable[0], last = focusable[focusable.length - 1];
         if (event.shiftKey && document.activeElement === first) {
             event.preventDefault();
@@ -394,8 +503,8 @@ function renderNetwork(snapshot) {
     latest = snapshot;
     const frame = snapshot.frame, d = snapshot.decision;
     const choiceLabel = d ? outputLabels[d.choice] : snapshot.running ? 'Observando' : 'Pausado';
-    if (element('choice').textContent !== choiceLabel)
-        element('choice').textContent = choiceLabel;
+    if (element('choice').textContent !== (activeFriend ? choiceLabel : 'Crie um amigo'))
+        element('choice').textContent = activeFriend ? choiceLabel : 'Crie um amigo';
     element('situation').textContent = `${snapshot.source === 'demo' ? 'Demonstração: ' + live.demoContext : snapshot.source === 'audio' ? 'Entrada real: energia do microfone' : 'Entrada fixa: sem atividade informada'}${snapshot.running ? '' : ' · pausada'}`;
     element('network-toggle').textContent = snapshot.running ? 'Pausar rede' : 'Retomar rede';
     element('reward-good').disabled = !d;
@@ -411,16 +520,20 @@ let analyser = null, audioContext = null, audioSource = null, audioSamples = nul
 function audioEnergy() { if (!analyser || !audioSamples)
     return 0; analyser.getFloatTimeDomainData(audioSamples); let sum = 0; for (const n of audioSamples)
     sum += n * n; return Math.min(1, Math.sqrt(sum / audioSamples.length) * 8); }
-const live = new LiveNetwork(renderNetwork, undefined, audioEnergy);
+let live = new LiveNetwork(renderNetwork, activeFriend ? new Brain(activeFriend.brain) : undefined, audioEnergy);
 function stopAudioAnalysis() { audioSource?.disconnect(); audioSource = null; analyser?.disconnect(); analyser = null; audioSamples = null; const old = audioContext; audioContext = null; if (old)
     void old.close().catch(() => { }); }
 function setInput() { const source = element('input-source').value; live.setSource(source, element('demo-context').value || 'Usuário ocupado'); element('demo-context').hidden = source !== 'demo'; element('teach').disabled = source !== 'demo'; }
 element('input-source').onchange = setInput;
 element('demo-context').onchange = setInput;
-element('network-toggle').onclick = () => live.snapshot().running ? live.stop() : live.start();
+element('network-toggle').onclick = () => { if (activeFriend)
+    live.snapshot().running ? live.stop() : live.start(); };
 function learning(action) { try {
+    if (!activeFriend)
+        throw Error('Crie um amigo primeiro.');
     action();
-    element('status').textContent = 'Pesos atualizados nesta sessão. Observe a próxima decisão.';
+    persistFriend();
+    element('status').textContent = 'Aprendizado salvo para ' + activeFriend.name + '.';
 }
 catch (error) {
     element('status').textContent = String(error);
@@ -428,6 +541,79 @@ catch (error) {
 element('reward-good').onclick = () => learning(() => live.feedback(1));
 element('reward-bad').onclick = () => learning(() => live.feedback(-1));
 element('teach').onclick = () => learning(() => live.teach(Number(element('teach-target').value)));
+function persistFriend() { if (friends && activeFriend)
+    friends.save(live.brain.snapshot(), messages); }
+function cancelFriendForms() { pendingDelete = null; element('friend-create-form').hidden = true; element('friend-delete-confirm').hidden = true; }
+function renderFriends() {
+    element('friend-current').textContent = (activeFriend?.name ?? 'Nenhum amigo') + ' ⌄';
+    element('friend-delete').disabled = !activeFriend;
+    element('friend-create').disabled = !friends;
+    for (const id of ['session-toggle', 'network-toggle', 'chat-text'])
+        element(id).disabled = !activeFriend;
+    element('teach').disabled = !activeFriend || live.source !== 'demo';
+    const list = element('friend-list');
+    list.replaceChildren();
+    for (const friend of friends?.snapshot().friends ?? []) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = friend.name;
+        button.setAttribute('aria-current', String(friend.id === activeFriend?.id));
+        button.onclick = () => changeFriend(() => friends.select(friend.id));
+        list.append(button);
+    }
+}
+function renderMessages() { element('messages').replaceChildren(); for (const message of messages)
+    addMessage(message.text, message.user); }
+function suspendFriend() { microphone.stop(); live.stop(); stopAudioAnalysis(); persistFriend(); }
+function changeFriend(operation) {
+    try {
+        suspendFriend();
+        operation();
+        activeFriend = friends.current();
+        messages = activeFriend?.messages ?? [];
+        preferences.name = activeFriend?.name ?? 'Sem amigo';
+        live = new LiveNetwork(renderNetwork, activeFriend ? new Brain(activeFriend.brain) : undefined, audioEnergy);
+        inspected = null;
+        latest = null;
+        element('input-source').value = 'idle';
+        element('demo-context').hidden = true;
+        element('teach').disabled = true;
+        cancelFriendForms();
+        applyPreferences();
+        renderFriends();
+        renderMessages();
+        renderNetwork(live.snapshot());
+        element('friend-current').focus();
+        element('status').textContent = activeFriend ? 'Amigo selecionado. Microfone desligado; inicie quando quiser.' : 'Nenhum amigo. Abra o menu para criar um novo.';
+    }
+    catch (error) {
+        element('friend-status').textContent = String(error);
+    }
+}
+element('friend-current').onclick = () => { const open = element('friend-options').hidden; element('friend-options').hidden = !open; element('friend-current').setAttribute('aria-expanded', String(open)); if (!open)
+    cancelFriendForms(); };
+element('friend-create').onclick = () => { cancelFriendForms(); element('friend-create-form').hidden = false; element('friend-new-name').value = ''; element('friend-new-name').focus(); };
+element('friend-create-cancel').onclick = () => { cancelFriendForms(); element('friend-create').focus(); };
+element('friend-create-form').addEventListener('submit', event => { event.preventDefault(); try {
+    const name = cleanName(element('friend-new-name').value);
+    changeFriend(() => friends.create(name));
+}
+catch (error) {
+    element('friend-status').textContent = String(error);
+} });
+element('friend-delete').onclick = () => { if (!activeFriend)
+    return; cancelFriendForms(); pendingDelete = { id: activeFriend.id, name: activeFriend.name }; element('delete-warning').textContent = `Apagar o amigo “${activeFriend.name}”? O aprendizado e a conversa deste amigo serão perdidos definitivamente neste navegador. Os outros amigos e o tema serão mantidos.`; element('friend-delete-confirm').hidden = false; element('friend-delete-cancel').focus(); };
+element('friend-delete-cancel').onclick = () => { cancelFriendForms(); element('friend-delete').focus(); };
+element('friend-delete-yes').onclick = () => { if (!pendingDelete)
+    return; const id = pendingDelete.id; changeFriend(() => friends.delete(id, true)); element('friend-current').focus(); };
+window.addEventListener('storage', event => { if (event.key === 'companheiro.friends.v1') {
+    microphone.stop();
+    live.stop();
+    stopAudioAnalysis();
+    for (const id of ['session-toggle', 'network-toggle', 'teach', 'reward-good', 'reward-bad', 'chat-text', 'friend-create', 'friend-delete'])
+        element(id).disabled = true;
+    element('status').textContent = 'Amigos alterados em outra aba. Reabra esta página para continuar sem sobrescrever dados.';
+} });
 function addMessage(text, user) {
     const container = element('messages'), message = document.createElement('div');
     message.className = `message ${user ? 'user' : 'companion'}`;
@@ -456,12 +642,28 @@ element('chat-form').addEventListener('submit', event => {
     const input = element('chat-text'), text = input.value.trim();
     if (!text)
         return;
+    if (!activeFriend)
+        return;
+    const reply = 'Estou aqui. Podemos ir uma coisa de cada vez.';
+    messages.push({ user: true, text }, { user: false, text: reply });
     addMessage(text, true);
     input.value = '';
-    addMessage('Estou aqui. Podemos ir uma coisa de cada vez.', false);
+    addMessage(reply, false);
+    try {
+        persistFriend();
+    }
+    catch (error) {
+        element('status').textContent = String(error);
+    }
 });
 applyPreferences();
-live.start();
+renderFriends();
+renderMessages();
+if (activeFriend)
+    live.start();
+else
+    renderNetwork(live.snapshot());
+element('status').textContent = loadError || friends?.migration || '';
 const microphone = new MicrophoneSession(async () => {
     if (!navigator.mediaDevices?.getUserMedia)
         throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
@@ -488,11 +690,14 @@ const microphone = new MicrophoneSession(async () => {
     element('mic-note').textContent = state === 'active' ? 'Captura local ativa nesta aba. Sem gravação, envio ou reconhecimento de voz.' : 'Microfone local. Sem gravação, envio ou reconhecimento de voz.';
 });
 element('session-toggle').onclick = () => {
+    if (!activeFriend)
+        return;
+    const friendAtStart = activeFriend.id;
     if (microphone.state === 'off') {
         live.start();
         void microphone.start().then(() => {
             const stream = microphone.getStream();
-            if (!stream)
+            if (!stream || activeFriend?.id !== friendAtStart)
                 return;
             try {
                 audioContext = new AudioContext();
@@ -519,5 +724,11 @@ element('session-toggle').onclick = () => {
     else
         microphone.stop();
 };
-window.addEventListener('pagehide', () => { microphone.stop(); live.stop(); stopAudioAnalysis(); });
-window.addEventListener('beforeunload', () => { microphone.stop(); live.stop(); stopAudioAnalysis(); });
+window.addEventListener('pagehide', () => { microphone.stop(); live.stop(); stopAudioAnalysis(); try {
+    persistFriend();
+}
+catch { } });
+window.addEventListener('beforeunload', () => { microphone.stop(); live.stop(); stopAudioAnalysis(); try {
+    persistFriend();
+}
+catch { } });

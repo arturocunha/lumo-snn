@@ -1,0 +1,1 @@
+"""Companheiro SNN — protótipo local."""

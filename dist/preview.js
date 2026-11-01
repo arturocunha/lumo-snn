@@ -30,18 +30,13 @@ function savePreferences(preferences) {
         return false;
     }
 }
-const decisionExamples = [
-    { choice: 0, title: 'Aguardar', description: 'Dar espaço enquanto você se concentra.', situation: 'Você está ocupado.', icon: '◌' },
-    { choice: 1, title: 'Perguntar', description: 'Entender se você quer ajuda antes de interromper.', situation: 'Você está organizando seu dia.', icon: '?' },
-    { choice: 2, title: 'Sugerir uma página', description: 'Propor uma referência e aguardar sua confirmação.', situation: 'Uma página poderia ilustrar a conversa.', icon: '↗' },
-];
-const illustrativeWeights = [[.25, .18, .12, .33, .21, .4], [.14, .35, .21, .2, .42, .18], [.22, .3, .4, .12, .26, .09]];
 class MicrophoneSession {
     request;
     notify;
     state = 'off';
     stream = null;
     generation = 0;
+    getStream() { return this.stream; }
     constructor(request, notify) {
         this.request = request;
         this.notify = notify;

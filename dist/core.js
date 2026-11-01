@@ -12,13 +12,42 @@ export function validateProfile(value) {
     if (!p || p.version !== 1 || !Array.isArray(p.weights) || p.weights.length !== 3 || p.weights.some(row => !Array.isArray(row) || row.length !== 6 || row.some(w => typeof w !== 'number' || !Number.isFinite(w) || w < 0 || w > 1)) || !Number.isSafeInteger(p.updates) || p.updates < 0 || !p.evidence || typeof p.evidence !== 'object' || Array.isArray(p.evidence))
         throw Error('Perfil inválido. O arquivo foi preservado.');
     for (const [context, entries] of Object.entries(p.evidence)) {
-        if (!Object.hasOwn(contexts, context) || !entries || typeof entries !== 'object' || Array.isArray(entries))
+        if ((!Object.hasOwn(contexts, context) && context !== 'Áudio local') || !entries || typeof entries !== 'object' || Array.isArray(entries))
             throw Error('Evidências inválidas');
         for (const [action, counts] of Object.entries(entries))
             if (!['0', '1', '2'].includes(action) || !Array.isArray(counts) || counts.length !== 2 || counts.some(n => !Number.isSafeInteger(n) || n < 0))
                 throw Error('Feedback inválido');
     }
     return JSON.parse(JSON.stringify(p));
+}
+export class LIFSimulation {
+    weights;
+    voltage = [0, 0, 0];
+    counts = [0, 0, 0];
+    phase = Array(6).fill(0);
+    pre = Array(6).fill(0);
+    eligibility = actions.map(() => Array(6).fill(0));
+    raster = [];
+    input = Array(6).fill(0);
+    constructor(weights) {
+        this.weights = weights;
+    }
+    step(input) {
+        if (input.length !== 6 || input.some(x => !Number.isFinite(x) || x < 0 || x > 1))
+            throw Error('Contexto inválido');
+        this.input = [...input];
+        const inputSpikes = input.map((rate, i) => { this.phase[i] += rate; const spike = this.phase[i] >= 1 ? 1 : 0; this.phase[i] -= spike; this.pre[i] = .8 * this.pre[i] + spike; return spike; });
+        const fired = [], beforeReset = [];
+        this.weights.forEach((row, j) => { this.voltage[j] = .85 * this.voltage[j] + row.reduce((s, w, i) => s + w * inputSpikes[i], 0); beforeReset.push(this.voltage[j]); if (this.voltage[j] >= 1) {
+            this.counts[j]++;
+            this.voltage[j] = 0;
+            fired.push(j);
+            this.pre.forEach((v, i) => this.eligibility[j][i] += v);
+        } });
+        this.raster.push(fired);
+        return { tick: this.raster.length, inputSpikes, fired, potentials: [...this.voltage], beforeReset, counts: [...this.counts] };
+    }
+    result() { const scores = this.counts.map((n, j) => n + this.voltage[j]); return { choice: scores.indexOf(Math.max(...scores)), scores, spikes: [...this.counts], raster: this.raster.map(row => [...row]), eligibility: this.eligibility.map(row => [...row]), features: [...this.input] }; }
 }
 export class Brain {
     weights;
@@ -38,33 +67,21 @@ export class Brain {
     }
     snapshot() { return validateProfile({ version: 1, weights: this.weights, evidence: this.evidence, updates: this.updates }); }
     run(input) {
-        if (input.length !== 6 || input.some(x => !Number.isFinite(x) || x < 0 || x > 1))
-            throw Error('Contexto inválido');
-        const voltage = [0, 0, 0], counts = [0, 0, 0], phase = Array(6).fill(0), pre = Array(6).fill(0), eligibility = actions.map(() => Array(6).fill(0));
-        const raster = [];
-        for (let tick = 0; tick < 80; tick++) {
-            const spikes = input.map((rate, i) => { phase[i] += rate; const s = phase[i] >= 1 ? 1 : 0; phase[i] -= s; pre[i] = .8 * pre[i] + s; return s; });
-            const fired = [];
-            this.weights.forEach((row, j) => { voltage[j] = .85 * voltage[j] + row.reduce((s, w, i) => s + w * spikes[i], 0); if (voltage[j] >= 1) {
-                counts[j]++;
-                voltage[j] = 0;
-                fired.push(j);
-                pre.forEach((v, i) => eligibility[j][i] += v);
-            } });
-            raster.push(fired);
-        }
-        const scores = counts.map((n, j) => n + voltage[j]);
-        const choice = scores.indexOf(Math.max(...scores));
-        return { choice, scores, spikes: counts, raster, eligibility, features: [...input] };
+        const simulation = new LIFSimulation(this.weights);
+        for (let i = 0; i < 80; i++)
+            simulation.step(input);
+        return simulation.result();
+    }
+    complete(result, context) {
+        const margin = result.scores[result.choice] - Math.max(...result.scores.filter((_, i) => i !== result.choice));
+        const [good, bad] = this.evidence[context]?.[String(result.choice)] ?? [0, 0];
+        const reliable = good >= 3 && good / Math.max(1, good + bad) >= .75 && margin >= 2;
+        return this.pending = { ...result, context, margin, reliable, effective: result.choice === 2 && !reliable ? 1 : result.choice };
     }
     decide(context) {
         if (!Object.hasOwn(contexts, context))
             throw Error('Contexto desconhecido');
-        const r = this.run(contexts[context]);
-        const margin = r.scores[r.choice] - Math.max(...r.scores.filter((_, i) => i !== r.choice));
-        const [good, bad] = this.evidence[context]?.[String(r.choice)] ?? [0, 0];
-        const reliable = good >= 3 && good / Math.max(1, good + bad) >= .75 && margin >= 2;
-        return this.pending = { ...r, context, margin, reliable, effective: r.choice === 2 && !reliable ? 1 : r.choice };
+        return this.complete(this.run(contexts[context]), context);
     }
     plasticity(r, target, reward) {
         let trace = r.eligibility[target];

@@ -15,19 +15,13 @@ function loadPreferences():PreviewPreferences{
 function savePreferences(preferences:PreviewPreferences):boolean{
  try{localStorage.setItem(preferenceKey,JSON.stringify(preferences));return true;}catch{return false;}
 }
-const decisionExamples=[
- {choice:0,title:'Aguardar',description:'Dar espaço enquanto você se concentra.',situation:'Você está ocupado.',icon:'◌'},
- {choice:1,title:'Perguntar',description:'Entender se você quer ajuda antes de interromper.',situation:'Você está organizando seu dia.',icon:'?'},
- {choice:2,title:'Sugerir uma página',description:'Propor uma referência e aguardar sua confirmação.',situation:'Uma página poderia ilustrar a conversa.',icon:'↗'},
-];
-const illustrativeWeights=[[.25,.18,.12,.33,.21,.4],[.14,.35,.21,.2,.42,.18],[.22,.3,.4,.12,.26,.09]];
-
 /** Captura local real, iniciada só por gesto. Não grava, não analisa e não envia áudio. */
 type CaptureState='off'|'starting'|'active';
 class MicrophoneSession {
  state:CaptureState='off';
  private stream:MediaStream|null=null;
  private generation=0;
+ getStream(){return this.stream;}
  constructor(private request:()=>Promise<MediaStream>,private notify:(state:CaptureState,error:string)=>void){}
  async start(){
   if(this.state!=='off')return;

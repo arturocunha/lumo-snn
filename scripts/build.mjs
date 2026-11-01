@@ -11,3 +11,7 @@ const program=ts.createProgram(config.fileNames,config.options);
 const diagnostics=ts.getPreEmitDiagnostics(program);
 if(diagnostics.length){console.error(ts.formatDiagnosticsWithColorAndContext(diagnostics,{getCurrentDirectory:()=>process.cwd(),getCanonicalFileName:f=>f,getNewLine:()=> '\n'}));process.exit(1);}
 program.emit();console.log(`TypeScript ${ts.version}: compilação concluída.`);
+// Bundle local sem dependências: estes quatro módulos não têm importações dinâmicas.
+const {writeFileSync}=await import('node:fs');
+const browser=['core','live','preview','ui'].map(name=>readFileSync(`dist/${name}.js`,'utf8').replace(/^import .+ from ['"].+['"];?\r?$/gm,'').replace(/^export /gm,'')).join('\n');
+writeFileSync('dist/browser.js',browser);

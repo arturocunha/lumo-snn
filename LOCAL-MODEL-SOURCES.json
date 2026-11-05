@@ -1,0 +1,19 @@
+{
+  "model": {
+    "base": "https://huggingface.co/Qwen/Qwen3-0.6B",
+    "quantization": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF",
+    "revision": "50968a4468ef4233ed78cd7c3de230dd1d61a56b",
+    "file": "Qwen3-0.6B-Q4_K_M.gguf",
+    "bytes": 396705472,
+    "sha256": "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a"
+  },
+  "runtime": {
+    "release": "https://github.com/ggml-org/llama.cpp/releases/tag/b12032",
+    "archive": "llama-b12032-bin-ubuntu-x64.tar.gz",
+    "bytes": 22886629,
+    "sha256": "9f10432ca3f66ef003a7a540aaffb9da0acadaefd05404521b9ab7a2436af304",
+    "gpu": false,
+    "threads": 4
+  },
+  "verification": "Checksums comparados com metadata LFS do publicador e digest da release oficial. Runtime sem bibliotecas ausentes nesta máquina."
+}

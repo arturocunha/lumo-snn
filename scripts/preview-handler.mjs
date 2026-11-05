@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-export const previewVersion='snn-20261101-04';
+export const previewVersion='conversa-20261101-05';
 export const previewRoot=fileURLToPath(new URL('../',import.meta.url));
 export function previewHtml(){return readFileSync(previewRoot+'ui/index.html','utf8').replace('/* STYLE */',()=>readFileSync(previewRoot+'ui/style.css','utf8')).replace('/* SCRIPT */',()=>readFileSync(previewRoot+'dist/browser.js','utf8'));}
 export function previewHandler(request,response){

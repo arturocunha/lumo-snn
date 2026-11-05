@@ -13,6 +13,8 @@ export class LiveNetwork {
     demoContext = 'Usuário ocupado';
     frame = null;
     decision = null;
+    textInput = null;
+    textDone = null;
     input = contexts['Sem atividade informada'];
     constructor(notify, brain = new Brain(), energy = () => 0) {
         this.notify = notify;
@@ -28,6 +30,15 @@ export class LiveNetwork {
         clearInterval(this.displayTimer); this.timer = null; this.displayTimer = null; this.notify(this.snapshot()); }
     setSource(source, context = this.demoContext) { if (source === 'demo' && !Object.hasOwn(contexts, context))
         throw Error('Entrada inválida'); this.source = source; this.demoContext = context; this.reset(); this.notify(this.snapshot()); }
+    evaluateText(input, signal) {
+        if (signal.aborted)
+            return Promise.reject(Error('Conversa cancelada.'));
+        this.stop();
+        this.textInput = [...input];
+        this.source = 'text';
+        this.reset();
+        return new Promise((resolve, reject) => { const cancel = () => { this.textDone = null; this.stop(); reject(Error('Conversa cancelada.')); }; signal.addEventListener('abort', cancel, { once: true }); this.textDone = decision => { signal.removeEventListener('abort', cancel); resolve(decision); }; this.start(); });
+    }
     refresh() { this.reset(); this.notify(this.snapshot()); }
     reset() { this.tick = 0; this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.brain.temporal); this.decision = null; this.frame = null; this.brain.pending = null; }
     advance(steps = 5, publish = true) {
@@ -36,12 +47,18 @@ export class LiveNetwork {
                 this.tick = 0;
                 this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.simulation.temporal());
             }
-            this.input = this.source === 'demo' ? contexts[this.demoContext] : this.source === 'audio' ? [1, 0, Math.min(1, Math.max(0, this.energy())), 0, 0, 0] : [1, 0, 0, 0, 0, 1];
+            this.input = this.source === 'text' && this.textInput ? this.textInput : this.source === 'demo' ? contexts[this.demoContext] : this.source === 'audio' ? [1, 0, Math.min(1, Math.max(0, this.energy())), 0, 0, 0] : [1, 0, 0, 0, 0, 1];
             this.frame = this.simulation.step(this.input);
             this.tick++;
             if (this.tick === 80) {
                 this.windows++;
-                this.decision = this.brain.complete(this.simulation.result(), this.source === 'demo' ? this.demoContext : this.source === 'audio' ? 'Áudio local' : 'Sem atividade informada');
+                this.decision = this.brain.complete(this.simulation.result(), this.source === 'demo' ? this.demoContext : this.source === 'audio' ? 'Áudio local' : this.source === 'text' ? 'Conversa textual' : 'Sem atividade informada');
+                if (this.source === 'text') {
+                    const done = this.textDone;
+                    this.textDone = null;
+                    this.stop();
+                    done?.(this.decision);
+                }
             }
         }
         this.brain.temporal = this.simulation.temporal();

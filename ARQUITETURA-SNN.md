@@ -8,7 +8,7 @@ Sem habilidades extras há **196 neurônios LIF simulados: 192 internos recorren
 
 Cada habilidade criada acrescenta um neurônio de saída e suas conexões reais. Limite atual: 12 habilidades ensinadas por amigo, além das quatro intenções, ou **208 LIF no máximo**. Não há neurônios decorativos nem crescimento automático da camada interna.
 
-As intenções iniciais são **Ouvir, Perguntar, Tirar dúvidas e Fazer**. São opções da política; não provas de ferramentas prontas. Ouvir só observa energia de um microfone já permitido, ou pede que ele seja iniciado. Perguntar mostra uma solicitação local. Tirar dúvidas pede informação que falta. Fazer pede uma definição/ferramenta, sem executar comandos gerais. Não há compreensão semântica, reconhecimento de fala, LLM, pesquisa conectada ou acesso geral ao Ubuntu.
+As intenções iniciais são **Ouvir, Perguntar, Tirar dúvidas e Fazer**. São opções da política; não provas de ferramentas prontas. Ouvir só observa energia de um microfone já permitido, ou pede que ele seja iniciado. Perguntar mostra uma solicitação local. Tirar dúvidas pede informação que falta. Fazer pede uma definição/ferramenta, sem executar comandos gerais. Na revisão 0.5, um modelo de texto local interpreta e formula respostas, conforme CONVERSA-LOCAL.md. A SNN não compreende linguagem por conta própria; não há reconhecimento de fala, pesquisa conectada ou acesso geral ao Ubuntu.
 
 ## Dinâmica real
 

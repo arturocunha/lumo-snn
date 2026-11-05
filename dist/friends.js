@@ -1,3 +1,4 @@
+import { validateTurn } from './conversation.js';
 import { validateSkills, baseActionIds } from './skills.js';
 import { Brain, validateProfile } from './core.js';
 export const maxFriends = 3;
@@ -20,8 +21,11 @@ export function validFriends(value) {
         friend.skills = validateSkills(friend.skills ?? []);
         if (friend.brain.actionIds.join(',') !== [...baseActionIds, ...friend.skills.map(s => s.id)].join(','))
             throw Error('Habilidades e rede não correspondem.');
-        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000 || (m.source !== undefined && !['demo', 'local'].includes(m.source))))
+        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000 || (m.source !== undefined && !['demo', 'local', 'model'].includes(m.source))))
             throw Error('Conversa inválida');
+        for (const message of friend.messages)
+            if (message.turn)
+                validateTurn(message.turn, friend.id, friend.brain.actionIds);
     }
     if (data.active !== null && !ids.has(data.active))
         throw Error('Amigo atual inválido');

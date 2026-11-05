@@ -49,7 +49,7 @@ export function validateProfile(value) {
     if (!Array.isArray(ids) || ids.length !== p.weights.length || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !id) || actions.some((id, i) => ids[i] !== id))
         throw Error('Catálogo da rede inválido');
     for (const [context, entries] of Object.entries(p.evidence)) {
-        if ((!Object.hasOwn(contexts, context) && context !== 'Áudio local') || !entries || typeof entries !== 'object' || Array.isArray(entries))
+        if ((!Object.hasOwn(contexts, context) && context !== 'Áudio local' && context !== 'Conversa textual') || !entries || typeof entries !== 'object' || Array.isArray(entries))
             throw Error('Evidências inválidas');
         for (const [action, counts] of Object.entries(entries))
             if (!/^(0|[1-9][0-9]*)$/.test(action) || Number(action) >= p.weights.length || !Array.isArray(counts) || counts.length !== 2 || counts.some(n => !Number.isSafeInteger(n) || n < 0))
@@ -157,6 +157,16 @@ export class Brain {
         this.readoutWeights[target] = this.readoutWeights[target].map((w, n) => Math.max(0, Math.min(1, w + .10 * reward * hidden[n] / hiddenScale)));
         this.updates++;
     }
+    rewardTrace(target, inputTrace, hiddenTrace, reward, context) {
+        if (!Number.isInteger(target) || target < 0 || target >= this.weights.length || ![1, -1].includes(reward) || inputTrace.length !== 6 || hiddenTrace.length !== 192 || [...inputTrace, ...hiddenTrace].some(n => !Number.isFinite(n) || n < 0 || n > 10000) || context !== 'Conversa textual')
+            throw Error('Feedback de interação inválido');
+        const scale = Math.max(...inputTrace, 1e-9), hiddenScale = Math.max(...hiddenTrace, 1e-9);
+        this.weights[target] = this.weights[target].map((w, i) => Math.max(0, Math.min(1, w + .075 * reward * inputTrace[i] / scale)));
+        this.readoutWeights[target] = this.readoutWeights[target].map((w, i) => Math.max(0, Math.min(1, w + .10 * reward * hiddenTrace[i] / hiddenScale)));
+        this.updates++;
+        const entries = this.evidence[context] ?? (this.evidence[context] = {}), counts = entries[String(target)] ?? (entries[String(target)] = [0, 0]);
+        counts[reward > 0 ? 0 : 1]++;
+    }
     feedback(reward) {
         if (!this.pending || ![1, -1].includes(reward))
             throw Error('Avalie novamente antes de dar feedback');
@@ -167,6 +177,8 @@ export class Brain {
         record[reward > 0 ? 0 : 1]++;
         this.pending = null;
     }
+    teachInput(input, target) { if (!Number.isInteger(target) || target < 0 || target >= this.weights.length)
+        throw Error('Habilidade inválida'); this.plasticity(this.run(input), target, 1); this.pending = null; }
     teach(context, target) {
         if (!Object.hasOwn(contexts, context) || !Number.isInteger(target) || target < 0 || target >= this.weights.length)
             throw Error('Exemplo inválido');

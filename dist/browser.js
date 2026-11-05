@@ -92,7 +92,7 @@ function validateProfile(value) {
     if (!Array.isArray(ids) || ids.length !== p.weights.length || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !id) || actions.some((id, i) => ids[i] !== id))
         throw Error('Catálogo da rede inválido');
     for (const [context, entries] of Object.entries(p.evidence)) {
-        if ((!Object.hasOwn(contexts, context) && context !== 'Áudio local') || !entries || typeof entries !== 'object' || Array.isArray(entries))
+        if ((!Object.hasOwn(contexts, context) && context !== 'Áudio local' && context !== 'Conversa textual') || !entries || typeof entries !== 'object' || Array.isArray(entries))
             throw Error('Evidências inválidas');
         for (const [action, counts] of Object.entries(entries))
             if (!/^(0|[1-9][0-9]*)$/.test(action) || Number(action) >= p.weights.length || !Array.isArray(counts) || counts.length !== 2 || counts.some(n => !Number.isSafeInteger(n) || n < 0))
@@ -200,6 +200,16 @@ class Brain {
         this.readoutWeights[target] = this.readoutWeights[target].map((w, n) => Math.max(0, Math.min(1, w + .10 * reward * hidden[n] / hiddenScale)));
         this.updates++;
     }
+    rewardTrace(target, inputTrace, hiddenTrace, reward, context) {
+        if (!Number.isInteger(target) || target < 0 || target >= this.weights.length || ![1, -1].includes(reward) || inputTrace.length !== 6 || hiddenTrace.length !== 192 || [...inputTrace, ...hiddenTrace].some(n => !Number.isFinite(n) || n < 0 || n > 10000) || context !== 'Conversa textual')
+            throw Error('Feedback de interação inválido');
+        const scale = Math.max(...inputTrace, 1e-9), hiddenScale = Math.max(...hiddenTrace, 1e-9);
+        this.weights[target] = this.weights[target].map((w, i) => Math.max(0, Math.min(1, w + .075 * reward * inputTrace[i] / scale)));
+        this.readoutWeights[target] = this.readoutWeights[target].map((w, i) => Math.max(0, Math.min(1, w + .10 * reward * hiddenTrace[i] / hiddenScale)));
+        this.updates++;
+        const entries = this.evidence[context] ?? (this.evidence[context] = {}), counts = entries[String(target)] ?? (entries[String(target)] = [0, 0]);
+        counts[reward > 0 ? 0 : 1]++;
+    }
     feedback(reward) {
         if (!this.pending || ![1, -1].includes(reward))
             throw Error('Avalie novamente antes de dar feedback');
@@ -210,6 +220,8 @@ class Brain {
         record[reward > 0 ? 0 : 1]++;
         this.pending = null;
     }
+    teachInput(input, target) { if (!Number.isInteger(target) || target < 0 || target >= this.weights.length)
+        throw Error('Habilidade inválida'); this.plasticity(this.run(input), target, 1); this.pending = null; }
     teach(context, target) {
         if (!Object.hasOwn(contexts, context) || !Number.isInteger(target) || target < 0 || target >= this.weights.length)
             throw Error('Exemplo inválido');
@@ -245,6 +257,103 @@ function validateUrl(value) {
 }
 function executeUrl(value, confirmed, opener) { const url = validateUrl(value); if (confirmed !== true)
     throw Error('Confirmação obrigatória'); opener(url); }
+
+
+function validateInterpretation(value, ids) {
+    const v = value;
+    if (!v || !Array.isArray(v.features) || v.features.length !== 6 || v.features.some(n => !Number.isFinite(n) || n < 0 || n > 1) || !Number.isFinite(v.uncertainty) || v.uncertainty < 0 || v.uncertainty > 1 || !Array.isArray(v.suggestedIds) || v.suggestedIds.length > 3 || new Set(v.suggestedIds).size !== v.suggestedIds.length || v.suggestedIds.some(id => !ids.includes(id)) || typeof v.rationale !== 'string' || v.rationale.length > 800 || (v.replies !== undefined && (!v.replies || typeof v.replies !== 'object' || Array.isArray(v.replies) || Object.keys(v.replies).some(id => !ids.includes(id)) || ids.some(id => typeof v.replies[id] !== 'string' || !v.replies[id].trim() || v.replies[id].length > 1500))))
+        throw Error('O modelo retornou um formato inválido. Nenhuma resposta foi inventada.');
+    return JSON.parse(JSON.stringify(v));
+}
+function textInput(model) { const input = [...model.features]; input[0] = 1; input[1] = 1; input[4] = Math.max(input[4], model.uncertainty); return input; }
+function turnTrace(id, decision, brain) {
+    const j = decision.choice;
+    let hidden = decision.hiddenEligibility[j];
+    if (!hidden.some(Boolean))
+        hidden = decision.hiddenActivity;
+    let input = decision.eligibility[j];
+    if (!input.some(Boolean))
+        input = decision.features;
+    return { id, actionId: brain.actionIds[j], context: 'Conversa textual', inputTrace: [...input], hiddenTrace: [...hidden] };
+}
+function validateTurn(value, friendId, ids) {
+    const turn = value, trace = turn?.trace;
+    if (!turn || typeof turn.id !== 'string' || turn.id.length > 100 || !turn.id || turn.friendId !== friendId || typeof turn.model !== 'string' || turn.model.length > 200 || !Array.isArray(turn.features) || turn.features.length !== 6 || turn.features.some(n => !Number.isFinite(n) || n < 0 || n > 1) || !Number.isFinite(turn.uncertainty) || turn.uncertainty < 0 || turn.uncertainty > 1 || !Array.isArray(turn.suggestedIds) || turn.suggestedIds.some(id => !ids.includes(id)) || typeof turn.rationale !== 'string' || turn.rationale.length > 800 || !ids.includes(turn.choiceId) || !trace || trace.id !== turn.id || trace.actionId !== turn.choiceId || trace.context !== 'Conversa textual' || !Array.isArray(trace.inputTrace) || trace.inputTrace.length !== 6 || !Array.isArray(trace.hiddenTrace) || trace.hiddenTrace.length !== 192 || [...trace.inputTrace, ...trace.hiddenTrace].some(n => !Number.isFinite(n) || n < 0 || n > 10000) || (turn.feedback !== undefined && turn.feedback !== 1 && turn.feedback !== -1))
+        throw Error('Interação de conversa inválida');
+    return JSON.parse(JSON.stringify(turn));
+}
+function applyTurnFeedback(brain, turn, reward) {
+    if (turn.feedback !== undefined)
+        throw Error('Esta interação já foi avaliada.');
+    const target = brain.actionIds.indexOf(turn.trace.actionId);
+    if (target < 0)
+        throw Error('Habilidade da interação não encontrada.');
+    brain.rewardTrace(target, turn.trace.inputTrace, turn.trace.hiddenTrace, reward, 'Conversa textual');
+    turn.feedback = reward;
+}
+class TextConversation {
+    controller = null;
+    generation = 0;
+    get busy() { return this.controller !== null; }
+    cancel() { this.generation++; this.controller?.abort(); this.controller = null; }
+    async send(request, brain, transport, evaluate) {
+        if (this.busy)
+            throw Error('Aguarde a resposta atual.');
+        const generation = ++this.generation, controller = new AbortController();
+        this.controller = controller;
+        const timer = setTimeout(() => controller.abort(), 75000);
+        try {
+            const result = await transport(request, controller.signal);
+            if (controller.signal.aborted || generation !== this.generation)
+                throw Error('Conversa cancelada.');
+            const interpretation = validateInterpretation(result.interpretation, brain.actionIds), input = textInput(interpretation), decision = await evaluate(input, controller.signal);
+            if (controller.signal.aborted || generation !== this.generation)
+                throw Error('Conversa cancelada.');
+            const id = brain.actionIds[decision.choice];
+            const trace = turnTrace(request.requestId, decision, brain);
+            const turn = { id: request.requestId, friendId: request.friendId, model: result.model, features: input, uncertainty: interpretation.uncertainty, suggestedIds: interpretation.suggestedIds, rationale: interpretation.rationale, choiceId: id, trace };
+            const response = await transport({ ...request, phase: 'respond', choiceId: id, uncertainty: interpretation.uncertainty }, controller.signal);
+            if (controller.signal.aborted || generation !== this.generation)
+                throw Error('Conversa cancelada.');
+            if (typeof response.reply !== 'string' || !response.reply.trim() || response.reply.length > 1500)
+                throw Error('O modelo retornou uma resposta inválida.');
+            let proposal = null;
+            let proposalError = false;
+            if (/\b(aprenda|ensine|ensinar|nova habilidade|guarde uma habilidade)\b/i.test(request.text)) {
+                try {
+                    const proposed = await transport({ ...request, phase: 'propose' }, controller.signal);
+                    if (controller.signal.aborted || generation !== this.generation)
+                        throw Error('Conversa cancelada.');
+                    if (proposed.proposal) {
+                        proposal = validateSkills([proposed.proposal])[0];
+                    }
+                }
+                catch {
+                    if (controller.signal.aborted || generation !== this.generation)
+                        throw Error('Conversa cancelada.');
+                    proposalError = true;
+                }
+            }
+            return { reply: response.reply, turn, decision, proposal, proposalError };
+        }
+        finally {
+            clearTimeout(timer);
+            if (generation === this.generation)
+                this.controller = null;
+        }
+    }
+}
+function conversationHistory(messages) {
+    const history = [];
+    let characters = 0;
+    for (const message of messages.filter(m => m.source === 'model').slice(-6).reverse()) {
+        if (characters + message.text.length > 3000)
+            break;
+        characters += message.text.length;
+        history.unshift({ role: message.user ? 'user' : 'assistant', content: message.text.slice(0, 2000) });
+    }
+    return history;
+}
 
 /** Catálogo limitado de efeitos locais. Nada aqui interpreta fala ou chama modelos. */
 const baseActionIds = ['ouvir', 'perguntar', 'tirar_duvidas', 'fazer'];
@@ -395,6 +504,8 @@ class LiveNetwork {
     demoContext = 'Usuário ocupado';
     frame = null;
     decision = null;
+    textInput = null;
+    textDone = null;
     input = contexts['Sem atividade informada'];
     constructor(notify, brain = new Brain(), energy = () => 0) {
         this.notify = notify;
@@ -410,6 +521,15 @@ class LiveNetwork {
         clearInterval(this.displayTimer); this.timer = null; this.displayTimer = null; this.notify(this.snapshot()); }
     setSource(source, context = this.demoContext) { if (source === 'demo' && !Object.hasOwn(contexts, context))
         throw Error('Entrada inválida'); this.source = source; this.demoContext = context; this.reset(); this.notify(this.snapshot()); }
+    evaluateText(input, signal) {
+        if (signal.aborted)
+            return Promise.reject(Error('Conversa cancelada.'));
+        this.stop();
+        this.textInput = [...input];
+        this.source = 'text';
+        this.reset();
+        return new Promise((resolve, reject) => { const cancel = () => { this.textDone = null; this.stop(); reject(Error('Conversa cancelada.')); }; signal.addEventListener('abort', cancel, { once: true }); this.textDone = decision => { signal.removeEventListener('abort', cancel); resolve(decision); }; this.start(); });
+    }
     refresh() { this.reset(); this.notify(this.snapshot()); }
     reset() { this.tick = 0; this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.brain.temporal); this.decision = null; this.frame = null; this.brain.pending = null; }
     advance(steps = 5, publish = true) {
@@ -418,12 +538,18 @@ class LiveNetwork {
                 this.tick = 0;
                 this.simulation = new LIFSimulation(this.brain.weights, this.brain.readoutWeights, this.simulation.temporal());
             }
-            this.input = this.source === 'demo' ? contexts[this.demoContext] : this.source === 'audio' ? [1, 0, Math.min(1, Math.max(0, this.energy())), 0, 0, 0] : [1, 0, 0, 0, 0, 1];
+            this.input = this.source === 'text' && this.textInput ? this.textInput : this.source === 'demo' ? contexts[this.demoContext] : this.source === 'audio' ? [1, 0, Math.min(1, Math.max(0, this.energy())), 0, 0, 0] : [1, 0, 0, 0, 0, 1];
             this.frame = this.simulation.step(this.input);
             this.tick++;
             if (this.tick === 80) {
                 this.windows++;
-                this.decision = this.brain.complete(this.simulation.result(), this.source === 'demo' ? this.demoContext : this.source === 'audio' ? 'Áudio local' : 'Sem atividade informada');
+                this.decision = this.brain.complete(this.simulation.result(), this.source === 'demo' ? this.demoContext : this.source === 'audio' ? 'Áudio local' : this.source === 'text' ? 'Conversa textual' : 'Sem atividade informada');
+                if (this.source === 'text') {
+                    const done = this.textDone;
+                    this.textDone = null;
+                    this.stop();
+                    done?.(this.decision);
+                }
             }
         }
         this.brain.temporal = this.simulation.temporal();
@@ -435,6 +561,7 @@ class LiveNetwork {
     teach(target) { if (this.source !== 'demo')
         throw Error('Use uma entrada de demonstração para ensinar.'); this.brain.teach(this.demoContext, target); this.reset(); this.notify(this.snapshot()); }
 }
+
 
 
 
@@ -458,8 +585,11 @@ function validFriends(value) {
         friend.skills = validateSkills(friend.skills ?? []);
         if (friend.brain.actionIds.join(',') !== [...baseActionIds, ...friend.skills.map(s => s.id)].join(','))
             throw Error('Habilidades e rede não correspondem.');
-        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000 || (m.source !== undefined && !['demo', 'local'].includes(m.source))))
+        if (!Array.isArray(friend.messages) || friend.messages.some(m => !m || typeof m.user !== 'boolean' || typeof m.text !== 'string' || m.text.length > 10000 || (m.source !== undefined && !['demo', 'local', 'model'].includes(m.source))))
             throw Error('Conversa inválida');
+        for (const message of friend.messages)
+            if (message.turn)
+                validateTurn(message.turn, friend.id, friend.brain.actionIds);
     }
     if (data.active !== null && !ids.has(data.active))
         throw Error('Amigo atual inválido');
@@ -549,6 +679,74 @@ class FriendsStore {
         }
     } next.friends = next.friends.filter(f => f.id !== id); if (next.active === id)
         next.active = next.friends[0]?.id ?? null; this.commit(next); return true; }
+}
+
+/** Segmentos curtos em RAM. Silêncio encerra fala; nenhum áudio é armazenado no navegador. */
+function encodePcmWav(samples, sampleRate) {
+    const length = Math.floor(samples.length * 16000 / sampleRate), buffer = new ArrayBuffer(44 + length * 2), view = new DataView(buffer);
+    const ascii = (offset, text) => { for (let i = 0; i < text.length; i++)
+        view.setUint8(offset + i, text.charCodeAt(i)); };
+    ascii(0, 'RIFF');
+    view.setUint32(4, 36 + length * 2, true);
+    ascii(8, 'WAVE');
+    ascii(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, 16000, true);
+    view.setUint32(28, 32000, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    ascii(36, 'data');
+    view.setUint32(40, length * 2, true);
+    for (let i = 0; i < length; i++) {
+        const p = i * sampleRate / 16000, j = Math.floor(p), f = p - j, n = samples[j] * (1 - f) + samples[Math.min(j + 1, samples.length - 1)] * f;
+        view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, n)) * 32767, true);
+    }
+    return buffer;
+}
+class VoiceSegmenter {
+    sampleRate;
+    emit;
+    chunks = [];
+    length = 0;
+    quiet = 0;
+    voiced = 0;
+    constructor(sampleRate, emit) {
+        this.sampleRate = sampleRate;
+        this.emit = emit;
+    }
+    reset() { this.chunks = []; this.length = 0; this.quiet = 0; this.voiced = 0; }
+    push(block) {
+        let square = 0;
+        for (const n of block)
+            square += n * n;
+        const rms = Math.sqrt(square / block.length), duration = block.length / this.sampleRate;
+        if (rms > .015) {
+            this.voiced += duration;
+            this.quiet = 0;
+        }
+        else if (this.length)
+            this.quiet += duration;
+        else
+            return;
+        this.chunks.push(new Float32Array(block));
+        this.length += block.length;
+        if (this.quiet >= .7 || this.length / this.sampleRate >= 10) {
+            if (this.voiced >= .35) {
+                const audio = new Float32Array(this.length);
+                let offset = 0;
+                for (const part of this.chunks) {
+                    audio.set(part, offset);
+                    offset += part.length;
+                }
+                this.reset();
+                this.emit(encodePcmWav(audio, this.sampleRate));
+            }
+            else
+                this.reset();
+        }
+    }
 }
 
 "use strict";
@@ -641,6 +839,8 @@ class MicrophoneSession {
 
 
 
+
+
 /** Prévia visual isolada. Somente nome e aparência usam armazenamento local. */
 const element = (id) => document.getElementById(id);
 let preferences = loadPreferences(), menuOpen = false;
@@ -653,6 +853,17 @@ catch (error) {
 }
 let activeFriend = friends?.current() ?? null, messages = activeFriend?.messages ?? [];
 let skills = activeFriend?.skills ?? [];
+const conversationRunner = new TextConversation();
+let activeTurn = messages.filter(m => m.turn).at(-1)?.turn ?? null;
+if (activeTurn?.feedback !== undefined)
+    activeTurn = null;
+let voiceSubmission = false, suppressVoiceUntil = 0;
+let teachingProposal = null;
+let modelStatus = { configured: false, model: '', destination: '', voiceAvailable: false };
+let microphone;
+let sessionStarted = false, sessionStarting = false;
+let startController = null;
+let localStop = Promise.resolve();
 preferences.name = activeFriend?.name ?? 'Sem amigo';
 let pendingDelete = null;
 function applyPreferences() {
@@ -742,7 +953,7 @@ let outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.m
 const network = element('network');
 const inputNodes = [], outputNodes = [], potentialNodes = [], connectionNodes = [];
 let latest = null, inspected = null, inspectedHidden = null;
-const inputLabels = () => latest?.source === 'audio' ? ['Presença', 'Sem fala interpretada', 'Energia do áudio', 'Sem ocupação lida', 'Sem pedido interpretado', 'Sem silêncio inferido'] : ['Presença', 'Conversa', 'Página relevante', 'Ocupado', 'Pedido de ajuda', 'Silêncio'];
+const inputLabels = () => latest?.source === 'text' ? ['Presença', 'Mensagem de texto', 'Relevância inferida', 'Ocupado (inferido)', 'Ajuda / incerteza', 'Pausa (inferida)'] : latest?.source === 'audio' ? ['Presença', 'Sem fala interpretada', 'Energia do áudio', 'Sem ocupação lida', 'Sem pedido interpretado', 'Sem silêncio inferido'] : ['Presença', 'Conversa', 'Página relevante', 'Ocupado', 'Pedido de ajuda', 'Silêncio'];
 function inspect(index) {
     inspectedHidden = null;
     inspected = index;
@@ -788,14 +999,18 @@ function renderNetwork(snapshot) {
         buildNetwork();
     latest = snapshot;
     const frame = snapshot.frame, d = snapshot.decision;
-    const choiceLabel = d ? outputLabels[d.choice] : snapshot.running ? 'Observando' : 'Pausado';
+    const choiceLabel = activeTurn ? outputLabels[live.brain.actionIds.indexOf(activeTurn.choiceId)] : d ? outputLabels[d.choice] : snapshot.running ? 'Observando' : 'Pausado';
     if (element('choice').textContent !== (activeFriend ? choiceLabel : 'Crie um amigo'))
         element('choice').textContent = activeFriend ? choiceLabel : 'Crie um amigo';
-    element('situation').textContent = `${snapshot.source === 'demo' ? 'Demonstração: ' + live.demoContext : snapshot.source === 'audio' ? 'Entrada real: energia do microfone' : 'Entrada fixa: sem atividade informada'}${snapshot.running ? '' : ' · pausada'}`;
+    element('situation').textContent = `${snapshot.source === 'text' ? 'Entrada: interpretação desta mensagem pelo modelo local' : snapshot.source === 'demo' ? 'Demonstração: ' + live.demoContext : snapshot.source === 'audio' ? 'Entrada real: energia do microfone' : 'Entrada fixa: sem atividade informada'}${snapshot.running ? '' : ' · pausada'}`;
+    if (activeTurn && snapshot.source !== 'text')
+        element('situation').textContent = 'Última conversa · decisão preservada para avaliação';
     element('network-toggle').textContent = snapshot.running ? 'Pausar rede' : 'Retomar rede';
-    element('review-selected').disabled = !d || !activeFriend;
-    element('reward-good').disabled = !d;
-    element('reward-bad').disabled = !d;
+    element('review-selected').disabled = !d || !activeFriend || !!activeTurn || conversationRunner.busy;
+    element('reward-good').disabled = conversationRunner.busy || (!activeTurn && !d);
+    element('reward-bad').disabled = conversationRunner.busy || (!activeTurn && !d);
+    if (activeTurn)
+        element('conversation-provenance').textContent = `Interação ${activeTurn.id.slice(-8)} · modelo ${activeTurn.model} interpretou os sinais [${activeTurn.features.map(n => n.toFixed(2)).join(', ')}] e sugeriu ${activeTurn.suggestedIds.join(', ')}. A SNN escolheu ${activeTurn.choiceId}. Incerteza: ${activeTurn.uncertainty.toFixed(2)}. Resposta textual; nenhuma habilidade foi executada.`;
     element('network-metrics').textContent = `Janela ${snapshot.window} · passo ${frame?.tick ?? 0}/80 · disparos ${frame?.counts.join(' / ') ?? '0 / 0 / 0'} · ${snapshot.updates} atualizações de pesos${d ? ' · saída após política: ' + outputLabels[d.effective] : ''}. Nenhuma ferramenta é executada.`;
     inputNodes.forEach((node, i) => { node.setAttribute('class', 'input-node' + (frame?.inputSpikes[i] ? ' fired' : '')); node.setAttribute('aria-label', `${inputLabels()[i]}: ${snapshot.input[i].toFixed(3)}`); inputTexts[i].textContent = inputLabels()[i]; });
     outputNodes.forEach((node, j) => { node.setAttribute('class', 'output-node' + (frame?.fired.includes(j) ? ' fired' : '')); node.setAttribute('aria-label', `${outputLabels[j]}: potencial ${(frame?.potentials[j] ?? 0).toFixed(3)}, ${frame?.counts[j] ?? 0} disparos`); potentialNodes[j].setAttribute('stroke-dasharray', `${Math.min(1, frame?.potentials[j] ?? 0) * 101} 101`); });
@@ -845,17 +1060,23 @@ element('reservoir-view').addEventListener('keydown', event => { if (['ArrowLeft
     const delta = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : event.key === 'ArrowUp' ? -24 : 24;
     inspectHidden(Math.max(0, Math.min(191, (inspectedHidden ?? 0) + delta)));
 } });
+let voiceProcessor = null, voiceGain = null, voiceSegmenter = null, voiceRequest = null, voiceBusy = false, voiceGeneration = 0;
 let analyser = null, audioContext = null, audioSource = null, audioSamples = null;
 function audioEnergy() { if (!analyser || !audioSamples)
     return 0; analyser.getFloatTimeDomainData(audioSamples); let sum = 0; for (const n of audioSamples)
     sum += n * n; return Math.min(1, Math.sqrt(sum / audioSamples.length) * 8); }
 let live = new LiveNetwork(renderNetwork, activeFriend ? new Brain(activeFriend.brain) : undefined, audioEnergy);
-function stopAudioAnalysis() { audioSource?.disconnect(); audioSource = null; analyser?.disconnect(); analyser = null; audioSamples = null; const old = audioContext; audioContext = null; if (old)
+function stopAudioAnalysis() { voiceGeneration++; voiceRequest?.abort(); voiceRequest = null; voiceBusy = false; voiceSegmenter?.reset(); voiceSegmenter = null; if (voiceProcessor) {
+    voiceProcessor.onaudioprocess = null;
+    voiceProcessor.disconnect();
+    voiceProcessor = null;
+} voiceGain?.disconnect(); voiceGain = null; audioSource?.disconnect(); audioSource = null; analyser?.disconnect(); analyser = null; audioSamples = null; const old = audioContext; audioContext = null; if (old)
     void old.close().catch(() => { }); }
 function setInput() { const source = element('input-source').value; live.setSource(source, element('demo-context').value || 'Usuário ocupado'); element('demo-context').hidden = source !== 'demo'; element('teach').disabled = source !== 'demo'; }
 element('input-source').onchange = setInput;
 element('demo-context').onchange = setInput;
-element('network-toggle').onclick = () => { if (activeFriend)
+element('network-toggle').onclick = () => { if (activeTurn || conversationRunner.busy)
+    return; if (activeFriend)
     live.snapshot().running ? live.stop() : live.start(); };
 function learning(action) { try {
     if (!activeFriend)
@@ -867,12 +1088,13 @@ function learning(action) { try {
 catch (error) {
     element('status').textContent = String(error);
 } }
-element('reward-good').onclick = () => learning(() => live.feedback(1));
-element('reward-bad').onclick = () => learning(() => live.feedback(-1));
+element('reward-good').onclick = () => rateInteraction(1);
+element('reward-bad').onclick = () => rateInteraction(-1);
 element('teach').onclick = () => learning(() => live.teach(Number(element('teach-target').value)));
 const executor = new SkillExecutor();
 let draftSteps = [], pendingExecution = null;
 function renderSkills() {
+    element('live-neuron-count').textContent = `192 internos · ${outputLabels.length} saídas`;
     element('skill-count').textContent = String(outputLabels.length);
     element('neuron-count').textContent = `${192 + outputLabels.length} neurônios LIF: 192 internos e ${outputLabels.length} saídas. 6 canais de entrada, não contados como neurônios. Todos os 192 internos são mostrados; recorrência fixa e leitura plástica.`;
     const target = element('teach-target');
@@ -933,6 +1155,10 @@ element('skill-form').addEventListener('submit', event => {
     event.preventDefault();
     if (!activeFriend)
         return;
+    if (conversationRunner.busy || activeTurn) {
+        element('skill-status').textContent = 'Conclua ou avalie a conversa antes de alterar habilidades.';
+        return;
+    }
     try {
         const name = element('skill-name').value.trim();
         const steps = draftSteps.map(step => {
@@ -1039,13 +1265,16 @@ function renderFriends() {
 }
 function renderMessages() { element('messages').replaceChildren(); for (const message of messages)
     addMessage(message.text, message.user, message.source); }
-function suspendFriend() { cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); persistFriend(); }
+function suspendFriend() { teachingProposal = null; element('teaching-proposal').hidden = true; stopSession(); cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); persistFriend(); }
 function changeFriend(operation) {
     try {
         suspendFriend();
         operation();
         activeFriend = friends.current();
         messages = activeFriend?.messages ?? [];
+        activeTurn = messages.filter(m => m.turn).at(-1)?.turn ?? null;
+        if (activeTurn?.feedback !== undefined)
+            activeTurn = null;
         skills = activeFriend?.skills ?? [];
         outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.map(skill => skill.name)];
         preferences.name = activeFriend?.name ?? 'Sem amigo';
@@ -1094,15 +1323,42 @@ element('friend-delete').onclick = () => { if (!activeFriend)
 element('friend-delete-cancel').onclick = () => { cancelFriendForms(); element('friend-delete').focus(); };
 element('friend-delete-yes').onclick = () => { if (!pendingDelete)
     return; const id = pendingDelete.id; changeFriend(() => friends.delete(id, true)); element('friend-current').focus(); };
-window.addEventListener('storage', event => { if (event.key === 'companheiro.friends.v1') {
+window.addEventListener('storage', event => {
+    if (event.key !== 'companheiro.friends.v1')
+        return;
+    const hadPending = conversationRunner.busy;
+    stopSession();
     cancelExecution();
-    microphone.stop();
-    live.stop();
-    stopAudioAnalysis();
-    for (const id of ['session-toggle', 'network-toggle', 'teach', 'reward-good', 'reward-bad', 'chat-text', 'friend-create', 'friend-delete'])
-        element(id).disabled = true;
-    element('status').textContent = 'Amigos alterados em outra aba. Reabra esta página para continuar sem sobrescrever dados.';
-} });
+    try {
+        friends = new FriendsStore(localStorage, preferences.name);
+        activeFriend = friends.current();
+        messages = activeFriend?.messages ?? [];
+        skills = activeFriend?.skills ?? [];
+        activeTurn = messages.filter(m => m.turn).at(-1)?.turn ?? null;
+        if (activeTurn?.feedback !== undefined)
+            activeTurn = null;
+        preferences.name = activeFriend?.name ?? 'Sem amigo';
+        outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.map(s => s.name)];
+        live = new LiveNetwork(renderNetwork, activeFriend ? new Brain(activeFriend.brain) : undefined, audioEnergy);
+        draftSteps = [];
+        element('skill-form').hidden = true;
+        cancelFriendForms();
+        applyPreferences();
+        renderFriends();
+        renderMessages();
+        renderSkills();
+        buildNetwork();
+        renderNetwork(live.snapshot());
+        element('chat-status').textContent = hadPending ? 'A conversa foi atualizada. Envie sua mensagem novamente se necessário.' : '';
+    }
+    catch {
+        friends = null;
+        activeFriend = null;
+        renderFriends();
+        syncChatControls();
+        element('chat-status').textContent = 'Não foi possível abrir este amigo. Atualize a página.';
+    }
+});
 function addMessage(text, user, source = 'demo') {
     const container = element('messages'), message = document.createElement('div');
     message.className = `message ${user ? 'user' : 'companion'}`;
@@ -1116,7 +1372,7 @@ function addMessage(text, user, source = 'demo') {
     if (!user) {
         const note = document.createElement('span');
         note.className = 'message-type';
-        note.textContent = source === 'local' ? 'AÇÃO LOCAL' : 'RESPOSTA SIMULADA';
+        note.textContent = source === 'local' ? 'AÇÃO LOCAL' : source === 'model' ? 'MODELO LOCAL · RESPOSTA EM TEXTO' : 'RESPOSTA SIMULADA';
         byline.append(note);
     }
     const bubble = document.createElement('div');
@@ -1126,42 +1382,200 @@ function addMessage(text, user, source = 'demo') {
     container.append(message);
     container.scrollTop = container.scrollHeight;
 }
-element('chat-form').addEventListener('submit', event => {
+element('teaching-dismiss').onclick = () => { teachingProposal = null; element('teaching-proposal').hidden = true; };
+element('teaching-save').onclick = () => {
+    const proposed = teachingProposal;
+    if (!proposed || activeFriend?.id !== proposed.friendId || conversationRunner.busy)
+        return;
+    try {
+        const skill = { ...proposed.skill, id: 'habilidade-' + (globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)) };
+        const nextSkills = validateSkills([...skills, skill]), brain = new Brain(live.brain.snapshot());
+        brain.addAction(skill.id);
+        brain.teachInput(proposed.features, brain.actionIds.length - 1);
+        friends.save(brain.snapshot(), messages, nextSkills);
+        skills = nextSkills;
+        live.brain = brain;
+        outputLabels = ['Ouvir', 'Perguntar', 'Tirar dúvidas', 'Fazer', ...skills.map(s => s.name)];
+        renderSkills();
+        buildNetwork();
+        live.refresh();
+        teachingProposal = null;
+        element('teaching-proposal').hidden = true;
+        element('chat-status').textContent = 'Habilidade guardada para este amigo.';
+    }
+    catch {
+        element('chat-status').textContent = 'Não consegui guardar essa habilidade. Descreva etapas mais simples.';
+    }
+};
+function syncChatControls() {
+    const locked = conversationRunner.busy || !!activeTurn;
+    element('chat-send').disabled = !activeFriend || conversationRunner.busy;
+    element('chat-cancel').hidden = !conversationRunner.busy;
+    if (conversationRunner.busy) {
+        for (const id of ['reward-good', 'reward-bad', 'review-selected'])
+            element(id).disabled = true;
+    }
+    for (const id of ['input-source', 'demo-context', 'network-toggle', 'skill-new', 'teach'])
+        element(id).disabled = locked || !activeFriend || (id === 'teach' && live.source !== 'demo') || (id === 'skill-new' && skills.length >= 12);
+    if (voiceBusy)
+        element('mic-status').textContent = 'Entendendo…';
+    else if (conversationRunner.busy)
+        element('mic-status').textContent = 'Respondendo…';
+    else if (microphone?.state === 'active')
+        element('mic-status').textContent = 'Escutando';
+    element('session-toggle').textContent = sessionStarting ? 'Cancelar' : sessionStarted || conversationRunner.busy ? 'Encerrar' : 'Iniciar companheiro';
+}
+function stopLocalModel() { if (typeof fetch === 'function')
+    localStop = fetch('/api/model/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', keepalive: true }).catch(() => { }); }
+function cancelConversation() { conversationRunner.cancel(); stopLocalModel(); if (live.source === 'text')
+    live.stop(); syncChatControls(); }
+element('chat-cancel').onclick = () => { cancelConversation(); element('chat-status').textContent = 'Resposta cancelada.'; };
+function rateInteraction(reward) {
+    if (conversationRunner.busy)
+        return;
+    if (!activeTurn) {
+        learning(() => live.feedback(reward));
+        return;
+    }
+    const turn = activeTurn, backup = live.brain.snapshot();
+    try {
+        applyTurnFeedback(live.brain, turn, reward);
+        persistFriend();
+        activeTurn = null;
+        live.refresh();
+        element('status').textContent = 'Avaliação salva para esta interação. Pesos atualizados.';
+    }
+    catch (error) {
+        live.brain = new Brain(backup);
+        delete turn.feedback;
+        element('status').textContent = String(error);
+    }
+    syncChatControls();
+}
+async function loadModelStatus() {
+    if (typeof fetch !== 'function')
+        return;
+    try {
+        const response = await fetch('/api/model', { cache: 'no-store' });
+        if (!response.ok)
+            throw Error();
+        const data = await response.json();
+        modelStatus = { configured: data.configured === true, model: data.model ?? '', destination: data.destination ?? '', voiceAvailable: data.voiceAvailable === true };
+        element('model-status').textContent = modelStatus.configured ? 'Modelo local experimental' : 'Modelo não conectado';
+        element('model-description').textContent = modelStatus.configured ? `${modelStatus.model} · somente localhost. Conversa local. Carrega ao iniciar ou enviar.` : 'O modelo local não está disponível. Nenhuma resposta fixa substituirá o modelo.';
+    }
+    catch {
+        element('model-status').textContent = 'Servidor de conversa indisponível';
+    }
+    syncChatControls();
+}
+element('chat-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const input = element('chat-text'), text = input.value.trim();
-    if (!text)
+    if (!text || !activeFriend || conversationRunner.busy)
         return;
-    if (!activeFriend)
+    if (!modelStatus.configured) {
+        await loadModelStatus();
+        if (!modelStatus.configured) {
+            element('chat-status').textContent = 'Não consegui conectar. Clique em Iniciar companheiro e tente novamente.';
+            return;
+        }
+    }
+    if (conversationRunner.busy)
         return;
-    const reply = 'Estou aqui. Podemos ir uma coisa de cada vez.';
-    messages.push({ user: true, text }, { user: false, text: reply });
-    addMessage(text, true);
-    input.value = '';
-    addMessage(reply, false);
+    if (messages.length >= 99) {
+        element('chat-status').textContent = 'Limite local de 100 mensagens atingido. O histórico foi preservado; nenhuma mensagem foi enviada.';
+        return;
+    }
+    const speakResponse = voiceSubmission;
+    voiceSubmission = false;
+    const friendId = activeFriend.id, id = 'turno-' + (globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36));
+    const request = { phase: 'interpret', requestId: id, friendId, name: activeFriend.name, text, consent: true, candidates: live.brain.actionIds.map((action, i) => ({ id: action, name: outputLabels[i] })), history: conversationHistory(messages) };
+    const previous = messages;
+    messages = [...messages, { user: true, text, source: 'model' }];
     try {
         persistFriend();
     }
     catch (error) {
-        element('status').textContent = String(error);
+        messages = previous;
+        element('chat-status').textContent = 'Mensagem não enviada: ' + String(error);
+        return;
+    }
+    sessionStarted = true;
+    renderMessages();
+    input.value = '';
+    activeTurn = null;
+    cancelExecution();
+    live.stop();
+    const thisLive = live;
+    element('chat-status').textContent = 'Modelo interpretando; em seguida a rede escolhe e o modelo responde…';
+    const promise = conversationRunner.send(request, thisLive.brain, async (payload, signal) => {
+        await localStop;
+        if (signal.aborted)
+            throw Error('Conversa cancelada.');
+        const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
+        const data = await response.json();
+        if (!response.ok)
+            throw Error(data.error || 'Conversa indisponível.');
+        return data;
+    }, (features, signal) => { if (activeFriend?.id !== friendId)
+        throw Error('Amigo alterado.'); element('input-source').value = 'text'; return thisLive.evaluateText(features, signal); });
+    syncChatControls();
+    try {
+        const result = await promise;
+        if (activeFriend?.id !== friendId)
+            return;
+        activeTurn = result.turn;
+        messages = [...messages, { user: false, text: result.reply, source: 'model', turn: result.turn }];
+        renderMessages();
+        persistFriend();
+        if (speakResponse && microphone.state === 'active') {
+            const voice = window.speechSynthesis?.getVoices().find(v => v.localService && /^pt/i.test(v.lang));
+            if (voice) {
+                const speech = new SpeechSynthesisUtterance(result.reply);
+                speech.voice = voice;
+                speech.onend = () => { suppressVoiceUntil = Date.now() + 500; };
+                window.speechSynthesis.speak(speech);
+            }
+        }
+        if (result.proposal) {
+            teachingProposal = { skill: result.proposal, friendId, features: result.turn.features };
+            element('teaching-description').textContent = `Guardar “${result.proposal.name}”? ${describePlan(result.proposal.plan)}`;
+            element('teaching-proposal').hidden = false;
+        }
+        element('model-status').textContent = 'Modelo local conectado';
+        element('chat-status').textContent = 'Resposta pronta. ＋ / − avaliam a decisão desta interação.';
+        renderNetwork(live.snapshot());
+    }
+    catch (error) {
+        if (activeFriend?.id === friendId) {
+            element('chat-status').textContent = (error instanceof Error && error.name === 'AbortError') ? 'Resposta cancelada.' : String(error);
+            live.stop();
+        }
+    }
+    finally {
+        syncChatControls();
     }
 });
 applyPreferences();
 renderFriends();
 renderMessages();
 renderSkills();
-if (activeFriend)
+if (activeFriend && !activeTurn)
     live.start();
 else
     renderNetwork(live.snapshot());
 element('status').textContent = loadError || friends?.migration || '';
-const microphone = new MicrophoneSession(async () => {
+if (loadError)
+    element('chat-status').textContent = 'Não consegui abrir seus amigos. Atualize a página.';
+microphone = new MicrophoneSession(async () => {
     if (!navigator.mediaDevices?.getUserMedia)
         throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
     return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 }, (state, error) => {
-    const button = element('session-toggle');
-    button.textContent = state === 'active' ? 'Encerrar' : state === 'starting' ? 'Cancelar' : 'Iniciar companheiro';
-    element('mic-status').textContent = state === 'active' ? 'Microfone ativo' : state === 'starting' ? 'Aguardando permissão…' : 'Desligado';
+    const button = element('toggle-mic');
+    button.textContent = state === 'active' ? 'Desativar microfone' : state === 'starting' ? 'Cancelar microfone' : 'Ativar microfone (opcional)';
+    element('mic-status').textContent = state === 'active' ? 'Escutando' : state === 'starting' ? 'Aguardando permissão do microfone…' : sessionStarting ? 'Carregando modelo local…' : sessionStarted ? 'Pronto para conversar' : 'Desligado';
     element('mic-dot').classList.toggle('active', state === 'active');
     element('mic-error').hidden = !error;
     element('mic-error').textContent = error;
@@ -1174,19 +1588,19 @@ const microphone = new MicrophoneSession(async () => {
             element('input-source').value = 'idle';
             live.setSource('idle');
         }
-        if (state === 'off') {
-            cancelExecution();
-            live.stop();
+        if (state === 'off' && live.source === 'audio') {
+            live.setSource('idle');
         }
     }
-    element('mic-note').textContent = state === 'active' ? 'Captura local ativa nesta aba. Sem gravação, envio ou reconhecimento de voz.' : 'Microfone local. Sem gravação, envio ou reconhecimento de voz.';
+    element('mic-note').textContent = state === 'active' ? 'Trechos temporários de áudio são transcritos neste computador.' : 'Microfone opcional; áudio temporário para transcrição neste computador.';
 });
-element('session-toggle').onclick = () => {
+element('toggle-mic').onclick = () => {
     if (!activeFriend)
         return;
     const friendAtStart = activeFriend.id;
     if (microphone.state === 'off') {
-        live.start();
+        if (!activeTurn)
+            live.start();
         void microphone.start().then(() => {
             const stream = microphone.getStream();
             if (!stream || activeFriend?.id !== friendAtStart)
@@ -1198,14 +1612,29 @@ element('session-toggle').onclick = () => {
                 analyser.fftSize = 512;
                 audioSamples = new Float32Array(512);
                 audioSource.connect(analyser);
+                if (modelStatus.voiceAvailable) {
+                    voiceSegmenter = new VoiceSegmenter(audioContext.sampleRate, wav => { void sendVoice(wav); });
+                    voiceProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                    voiceGain = audioContext.createGain();
+                    voiceGain.gain.value = 0;
+                    audioSource.connect(voiceProcessor);
+                    voiceProcessor.connect(voiceGain);
+                    voiceGain.connect(audioContext.destination);
+                    voiceProcessor.onaudioprocess = event => { event.outputBuffer.getChannelData(0).fill(0); if (conversationRunner.busy || voiceBusy || Date.now() < suppressVoiceUntil || window.speechSynthesis?.speaking) {
+                        voiceSegmenter?.reset();
+                        return;
+                    } voiceSegmenter?.push(event.inputBuffer.getChannelData(0)); };
+                }
                 const created = audioContext;
                 void audioContext.resume().catch(() => { if (audioContext !== created)
                     return; element('status').textContent = 'Análise de energia indisponível. A rede continua com entrada fixa.'; stopAudioAnalysis(); element('input-source').value = 'idle'; live.setSource('idle'); });
                 const option = element('input-source').querySelector('option[value="audio"]');
                 if (option)
                     option.disabled = false;
-                element('input-source').value = 'audio';
-                setInput();
+                if (!activeTurn) {
+                    element('input-source').value = 'audio';
+                    setInput();
+                }
             }
             catch {
                 stopAudioAnalysis();
@@ -1216,11 +1645,92 @@ element('session-toggle').onclick = () => {
     else
         microphone.stop();
 };
-window.addEventListener('pagehide', () => { cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); try {
+async function sendVoice(wav) {
+    if (!activeFriend || voiceBusy || conversationRunner.busy)
+        return;
+    const id = activeFriend.id, generation = voiceGeneration;
+    voiceBusy = true;
+    const controller = new AbortController();
+    voiceRequest = controller;
+    element('mic-status').textContent = 'Entendendo…';
+    try {
+        const response = await fetch('/api/transcribe', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: wav, signal: controller.signal });
+        const data = await response.json();
+        if (!response.ok)
+            throw Error(data.error);
+        if (generation !== voiceGeneration || activeFriend?.id !== id)
+            return;
+        const text = String(data.text || '').trim();
+        if (text && !conversationRunner.busy) {
+            voiceSubmission = true;
+            element('chat-text').value = text;
+            element('chat-form').requestSubmit();
+        }
+        else if (!text)
+            element('chat-status').textContent = 'Não entendi. Pode repetir ou digitar?';
+    }
+    catch (error) {
+        if (!controller.signal.aborted && generation === voiceGeneration)
+            element('chat-status').textContent = 'Não entendi. Pode repetir ou digitar?';
+    }
+    finally {
+        if (generation === voiceGeneration) {
+            voiceBusy = false;
+            voiceRequest = null;
+            element('mic-status').textContent = conversationRunner.busy ? 'Respondendo…' : microphone.state === 'active' ? 'Escutando' : 'Pronto para conversar';
+        }
+    }
+}
+function stopSession() { window.speechSynthesis?.cancel(); sessionStarted = false; sessionStarting = false; startController?.abort(); startController = null; cancelConversation(); microphone?.stop(); live.stop(); stopAudioAnalysis(); element('mic-status').textContent = 'Desligado'; syncChatControls(); }
+element('session-toggle').onclick = async () => {
+    if (sessionStarted || sessionStarting || conversationRunner.busy) {
+        stopSession();
+        return;
+    }
+    if (!activeFriend)
+        return;
+    sessionStarting = true;
+    startController = new AbortController();
+    const controller = startController;
+    const id = activeFriend.id;
+    element('mic-status').textContent = 'Carregando modelo local…';
+    syncChatControls();
+    try {
+        await localStop;
+        const response = await fetch('/api/model/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: controller.signal });
+        const data = await response.json();
+        if (!response.ok)
+            throw Error(data.error || 'Não foi possível iniciar o modelo local.');
+        if (controller.signal.aborted || activeFriend?.id !== id)
+            return;
+        sessionStarted = true;
+        element('mic-status').textContent = 'Pronto para conversar';
+        element('model-status').textContent = 'Modelo local conectado';
+        if (!activeTurn)
+            live.start();
+        if (modelStatus.voiceAvailable && microphone.state === 'off')
+            element('toggle-mic').click();
+    }
+    catch (error) {
+        if (activeFriend?.id === id) {
+            element('mic-status').textContent = 'Desligado';
+            element('chat-status').textContent = controller.signal.aborted ? 'Início cancelado.' : String(error);
+        }
+    }
+    finally {
+        if (startController === controller) {
+            startController = null;
+            sessionStarting = false;
+        }
+        syncChatControls();
+    }
+};
+window.addEventListener('pagehide', () => { stopSession(); cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); try {
     persistFriend();
 }
 catch { } });
-window.addEventListener('beforeunload', () => { cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); try {
+window.addEventListener('beforeunload', () => { stopSession(); cancelExecution(); microphone.stop(); live.stop(); stopAudioAnalysis(); try {
     persistFriend();
 }
 catch { } });
+void loadModelStatus();

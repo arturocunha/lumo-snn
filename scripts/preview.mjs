@@ -1,6 +1,13 @@
 import http from 'node:http';
 import {previewHandler,previewRoot,previewVersion} from './preview-handler.mjs';
+import {modelConfig} from './model-provider.mjs';
+import {createChatApi} from './chat-api.mjs';
+import {LocalRuntime} from './local-runtime.mjs';
+const runtime=new LocalRuntime();
+const chatApi=createChatApi(modelConfig(),{runtime});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopVoice();runtime.stop();server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),1000).unref();});
+import {voiceApi,stopVoice} from './voice-local.mjs';
 const port=Number(process.env.PORT||4173);
-const server=http.createServer(previewHandler);
+const server=http.createServer((req,res)=>req.url?.startsWith('/api/transcribe')?void voiceApi(req,res):req.url?.startsWith('/api/')?void chatApi(req,res):previewHandler(req,res));
 server.on('error',error=>{console.error(error.message);process.exit(1);});
 server.listen(port,'127.0.0.1',()=>console.log(`Companheiro ${previewVersion}: http://127.0.0.1:${port}/?v=${previewVersion}\nPasta: ${previewRoot}`));

@@ -1,3 +1,5 @@
+import {VoiceSegmenter} from './voice.js';
+import {TextConversation,conversationHistory,applyTurnFeedback,type ConversationTurn,type ConversationRequest} from './conversation.js';
 import {recurrence} from './reservoir.js';
 import {SkillExecutor,compilePlan,basePlan,validateSkills,type Skill,type Step} from './skills.js';
 import {LiveNetwork,type LiveSnapshot} from './live.js';
@@ -10,6 +12,12 @@ let friends:FriendsStore|null=null,loadError='';
 try{friends=new FriendsStore(localStorage,preferences.name);}catch(error){loadError=`Não foi possível abrir os amigos: ${String(error)}. Os dados foram preservados.`;}
 let activeFriend=friends?.current()??null,messages:ChatMessage[]=activeFriend?.messages??[];
 let skills:Skill[]=activeFriend?.skills??[];
+const conversationRunner=new TextConversation();
+let activeTurn:ConversationTurn|null=messages.filter(m=>m.turn).at(-1)?.turn??null;if(activeTurn?.feedback!==undefined)activeTurn=null;
+let voiceSubmission=false,suppressVoiceUntil=0;
+let teachingProposal:{skill:Skill;friendId:string;features:number[]}|null=null;
+let modelStatus={configured:false,model:'',destination:'',voiceAvailable:false};
+let microphone:MicrophoneSession;let sessionStarted=false,sessionStarting=false;let startController:AbortController|null=null;let localStop:Promise<unknown>=Promise.resolve();
 preferences.name=activeFriend?.name??'Sem amigo';
 let pendingDelete:{id:string;name:string}|null=null;
 
@@ -57,7 +65,7 @@ let outputLabels=['Ouvir','Perguntar','Tirar dúvidas','Fazer',...skills.map(ski
 const network=element('network');
 const inputNodes:SVGElement[]=[],outputNodes:SVGElement[]=[],potentialNodes:SVGElement[]=[],connectionNodes:SVGElement[][]=[];
 let latest:LiveSnapshot|null=null,inspected:number|null=null,inspectedHidden:number|null=null;
-const inputLabels=()=>latest?.source==='audio'?['Presença','Sem fala interpretada','Energia do áudio','Sem ocupação lida','Sem pedido interpretado','Sem silêncio inferido']:['Presença','Conversa','Página relevante','Ocupado','Pedido de ajuda','Silêncio'];
+const inputLabels=()=>latest?.source==='text'?['Presença','Mensagem de texto','Relevância inferida','Ocupado (inferido)','Ajuda / incerteza','Pausa (inferida)']:latest?.source==='audio'?['Presença','Sem fala interpretada','Energia do áudio','Sem ocupação lida','Sem pedido interpretado','Sem silêncio inferido']:['Presença','Conversa','Página relevante','Ocupado','Pedido de ajuda','Silêncio'];
 function inspect(index:number){
  inspectedHidden=null;inspected=index;if(!latest)return;
  const frame=latest.frame;
@@ -75,11 +83,13 @@ const inputTexts:SVGElement[]=[];
 function renderNetwork(snapshot:LiveSnapshot){
  if(connectionNodes.length!==snapshot.weights.length)buildNetwork();
  latest=snapshot;const frame=snapshot.frame,d=snapshot.decision;
- const choiceLabel=d?outputLabels[d.choice]:snapshot.running?'Observando':'Pausado';if(element('choice').textContent!==(activeFriend?choiceLabel:'Crie um amigo'))element('choice').textContent=activeFriend?choiceLabel:'Crie um amigo';
- element('situation').textContent=`${snapshot.source==='demo'?'Demonstração: '+live.demoContext:snapshot.source==='audio'?'Entrada real: energia do microfone':'Entrada fixa: sem atividade informada'}${snapshot.running?'':' · pausada'}`;
+ const choiceLabel=activeTurn?outputLabels[live.brain.actionIds.indexOf(activeTurn.choiceId)]:d?outputLabels[d.choice]:snapshot.running?'Observando':'Pausado';if(element('choice').textContent!==(activeFriend?choiceLabel:'Crie um amigo'))element('choice').textContent=activeFriend?choiceLabel:'Crie um amigo';
+ element('situation').textContent=`${snapshot.source==='text'?'Entrada: interpretação desta mensagem pelo modelo local':snapshot.source==='demo'?'Demonstração: '+live.demoContext:snapshot.source==='audio'?'Entrada real: energia do microfone':'Entrada fixa: sem atividade informada'}${snapshot.running?'':' · pausada'}`;
+if(activeTurn&&snapshot.source!=='text')element('situation').textContent='Última conversa · decisão preservada para avaliação';
  element('network-toggle').textContent=snapshot.running?'Pausar rede':'Retomar rede';
- element<HTMLButtonElement>('review-selected').disabled=!d||!activeFriend;
- element<HTMLButtonElement>('reward-good').disabled=!d;element<HTMLButtonElement>('reward-bad').disabled=!d;
+ element<HTMLButtonElement>('review-selected').disabled=!d||!activeFriend||!!activeTurn||conversationRunner.busy;
+ element<HTMLButtonElement>('reward-good').disabled=conversationRunner.busy||(!activeTurn&&!d);element<HTMLButtonElement>('reward-bad').disabled=conversationRunner.busy||(!activeTurn&&!d);
+ if(activeTurn)element('conversation-provenance').textContent=`Interação ${activeTurn.id.slice(-8)} · modelo ${activeTurn.model} interpretou os sinais [${activeTurn.features.map(n=>n.toFixed(2)).join(', ')}] e sugeriu ${activeTurn.suggestedIds.join(', ')}. A SNN escolheu ${activeTurn.choiceId}. Incerteza: ${activeTurn.uncertainty.toFixed(2)}. Resposta textual; nenhuma habilidade foi executada.`;
  element('network-metrics').textContent=`Janela ${snapshot.window} · passo ${frame?.tick??0}/80 · disparos ${frame?.counts.join(' / ')??'0 / 0 / 0'} · ${snapshot.updates} atualizações de pesos${d?' · saída após política: '+outputLabels[d.effective]:''}. Nenhuma ferramenta é executada.`;
  inputNodes.forEach((node,i)=>{node.setAttribute('class','input-node'+(frame?.inputSpikes[i]?' fired':''));node.setAttribute('aria-label',`${inputLabels()[i]}: ${snapshot.input[i].toFixed(3)}`);inputTexts[i].textContent=inputLabels()[i];});
  outputNodes.forEach((node,j)=>{node.setAttribute('class','output-node'+(frame?.fired.includes(j)?' fired':''));node.setAttribute('aria-label',`${outputLabels[j]}: potencial ${(frame?.potentials[j]??0).toFixed(3)}, ${frame?.counts[j]??0} disparos`);potentialNodes[j].setAttribute('stroke-dasharray',`${Math.min(1,frame?.potentials[j]??0)*101} 101`);});
@@ -102,19 +112,20 @@ function drawReservoir(snapshot:LiveSnapshot){
 }
 element('reservoir-view').addEventListener('pointermove',event=>{const canvas=element('reservoir-view'),rect=canvas.getBoundingClientRect();const x=(event.clientX-rect.left)/rect.width*600,y=(event.clientY-rect.top)/rect.height*160;inspectHidden(Math.min(191,Math.max(0,Math.floor(y/20)*24+Math.floor(x/25))));});
 element('reservoir-view').addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const delta=event.key==='ArrowLeft'?-1:event.key==='ArrowRight'?1:event.key==='ArrowUp'?-24:24;inspectHidden(Math.max(0,Math.min(191,(inspectedHidden??0)+delta)));}});
+let voiceProcessor:ScriptProcessorNode|null=null,voiceGain:GainNode|null=null,voiceSegmenter:VoiceSegmenter|null=null,voiceRequest:AbortController|null=null,voiceBusy=false,voiceGeneration=0;
 let analyser:AnalyserNode|null=null,audioContext:AudioContext|null=null,audioSource:MediaStreamAudioSourceNode|null=null,audioSamples:Float32Array<ArrayBuffer>|null=null;
 function audioEnergy(){if(!analyser||!audioSamples)return 0;analyser.getFloatTimeDomainData(audioSamples);let sum=0;for(const n of audioSamples)sum+=n*n;return Math.min(1,Math.sqrt(sum/audioSamples.length)*8);}
 let live=new LiveNetwork(renderNetwork,activeFriend?new Brain(activeFriend.brain):undefined,audioEnergy);
-function stopAudioAnalysis(){audioSource?.disconnect();audioSource=null;analyser?.disconnect();analyser=null;audioSamples=null;const old=audioContext;audioContext=null;if(old)void old.close().catch(()=>{});}
+function stopAudioAnalysis(){voiceGeneration++;voiceRequest?.abort();voiceRequest=null;voiceBusy=false;voiceSegmenter?.reset();voiceSegmenter=null;if(voiceProcessor){voiceProcessor.onaudioprocess=null;voiceProcessor.disconnect();voiceProcessor=null;}voiceGain?.disconnect();voiceGain=null;audioSource?.disconnect();audioSource=null;analyser?.disconnect();analyser=null;audioSamples=null;const old=audioContext;audioContext=null;if(old)void old.close().catch(()=>{});}
 function setInput(){const source=element<HTMLSelectElement>('input-source').value as 'idle'|'audio'|'demo';live.setSource(source,element<HTMLSelectElement>('demo-context').value||'Usuário ocupado');element('demo-context').hidden=source!=='demo';element<HTMLButtonElement>('teach').disabled=source!=='demo';}
 element('input-source').onchange=setInput;element('demo-context').onchange=setInput;
-element('network-toggle').onclick=()=>{if(activeFriend)live.snapshot().running?live.stop():live.start();};
+element('network-toggle').onclick=()=>{if(activeTurn||conversationRunner.busy)return;if(activeFriend)live.snapshot().running?live.stop():live.start();};
 function learning(action:()=>void){try{if(!activeFriend)throw Error('Crie um amigo primeiro.');action();persistFriend();element('status').textContent='Aprendizado salvo para '+activeFriend.name+'.';}catch(error){element('status').textContent=String(error);}}
-element('reward-good').onclick=()=>learning(()=>live.feedback(1));element('reward-bad').onclick=()=>learning(()=>live.feedback(-1));element('teach').onclick=()=>learning(()=>live.teach(Number(element<HTMLSelectElement>('teach-target').value)));
+element('reward-good').onclick=()=>rateInteraction(1);element('reward-bad').onclick=()=>rateInteraction(-1);element('teach').onclick=()=>learning(()=>live.teach(Number(element<HTMLSelectElement>('teach-target').value)));
 const executor=new SkillExecutor();
 let draftSteps:{kind:string;value:string}[]=[],pendingExecution:{friendId:string;plan:Step;catalog:Skill[];name:string}|null=null;
 function renderSkills(){
- element('skill-count').textContent=String(outputLabels.length);element('neuron-count').textContent=`${192+outputLabels.length} neurônios LIF: 192 internos e ${outputLabels.length} saídas. 6 canais de entrada, não contados como neurônios. Todos os 192 internos são mostrados; recorrência fixa e leitura plástica.`;
+ element('live-neuron-count').textContent=`192 internos · ${outputLabels.length} saídas`;element('skill-count').textContent=String(outputLabels.length);element('neuron-count').textContent=`${192+outputLabels.length} neurônios LIF: 192 internos e ${outputLabels.length} saídas. 6 canais de entrada, não contados como neurônios. Todos os 192 internos são mostrados; recorrência fixa e leitura plástica.`;
  const target=element<HTMLSelectElement>('teach-target');target.replaceChildren();outputLabels.forEach((label,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=label;target.append(option);});
  const list=element('skill-list');list.replaceChildren();for(const skill of skills){const row=document.createElement('div');row.className='skill-item';row.textContent=skill.name+' · ensino humano';list.append(row);}
  element<HTMLButtonElement>('skill-new').disabled=!activeFriend||skills.length>=12;
@@ -134,7 +145,7 @@ element('skill-new').onclick=()=>{if(!activeFriend)return;draftSteps=[{kind:'pro
 element('skill-add-step').onclick=()=>{if(draftSteps.length<8){draftSteps.push({kind:'wait',value:'500'});renderDraft();}};
 element('skill-cancel').onclick=()=>{element('skill-form').hidden=true;draftSteps=[];};
 element('skill-form').addEventListener('submit',event=>{
- event.preventDefault();if(!activeFriend)return;
+ event.preventDefault();if(!activeFriend)return;if(conversationRunner.busy||activeTurn){element('skill-status').textContent='Conclua ou avalie a conversa antes de alterar habilidades.';return;}
  try{
   const name=element<HTMLInputElement>('skill-name').value.trim();const steps:Step[]=draftSteps.map(step=>{
    if(step.kind.startsWith('ref:'))return {kind:'ref',id:step.kind.slice(4)};
@@ -181,9 +192,9 @@ function renderFriends(){
  for(const friend of friends?.snapshot().friends??[]){const button=document.createElement('button');button.type='button';button.textContent=friend.name;button.setAttribute('aria-current',String(friend.id===activeFriend?.id));button.onclick=()=>changeFriend(()=>friends!.select(friend.id));list.append(button);}
 }
 function renderMessages(){element('messages').replaceChildren();for(const message of messages)addMessage(message.text,message.user,message.source);}
-function suspendFriend(){cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();persistFriend();}
+function suspendFriend(){teachingProposal=null;element('teaching-proposal').hidden=true;stopSession();cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();persistFriend();}
 function changeFriend(operation:()=>void){
- try{suspendFriend();operation();activeFriend=friends!.current();messages=activeFriend?.messages??[];skills=activeFriend?.skills??[];outputLabels=['Ouvir','Perguntar','Tirar dúvidas','Fazer',...skills.map(skill=>skill.name)];preferences.name=activeFriend?.name??'Sem amigo';
+ try{suspendFriend();operation();activeFriend=friends!.current();messages=activeFriend?.messages??[];activeTurn=messages.filter(m=>m.turn).at(-1)?.turn??null;if(activeTurn?.feedback!==undefined)activeTurn=null;skills=activeFriend?.skills??[];outputLabels=['Ouvir','Perguntar','Tirar dúvidas','Fazer',...skills.map(skill=>skill.name)];preferences.name=activeFriend?.name??'Sem amigo';
   live=new LiveNetwork(renderNetwork,activeFriend?new Brain(activeFriend.brain):undefined,audioEnergy);draftSteps=[];element('skill-form').hidden=true;pendingExecution=null;inspectedHidden=null;inspected=null;latest=null;element<HTMLSelectElement>('input-source').value='idle';element('demo-context').hidden=true;element<HTMLButtonElement>('teach').disabled=true;
   cancelFriendForms();applyPreferences();renderFriends();renderMessages();renderSkills();buildNetwork();renderNetwork(live.snapshot());element('friend-current').focus();element('status').textContent=activeFriend?'Amigo selecionado. Microfone desligado; inicie quando quiser.':'Nenhum amigo. Abra o menu para criar um novo.';
  }catch(error){element('friend-status').textContent=String(error);}
@@ -195,48 +206,113 @@ element('friend-create-form').addEventListener('submit',event=>{event.preventDef
 element('friend-delete').onclick=()=>{if(!activeFriend)return;cancelFriendForms();pendingDelete={id:activeFriend.id,name:activeFriend.name};element('delete-warning').textContent=`Apagar o amigo “${activeFriend.name}”? O aprendizado e a conversa deste amigo serão perdidos definitivamente neste navegador. Os outros amigos e o tema serão mantidos.`;element('friend-delete-confirm').hidden=false;element('friend-delete-cancel').focus();};
 element('friend-delete-cancel').onclick=()=>{cancelFriendForms();element('friend-delete').focus();};
 element('friend-delete-yes').onclick=()=>{if(!pendingDelete)return;const id=pendingDelete.id;changeFriend(()=>friends!.delete(id,true));element('friend-current').focus();};
-window.addEventListener('storage',event=>{if(event.key==='companheiro.friends.v1'){cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();for(const id of ['session-toggle','network-toggle','teach','reward-good','reward-bad','chat-text','friend-create','friend-delete'])element<HTMLButtonElement>(id).disabled=true;element('status').textContent='Amigos alterados em outra aba. Reabra esta página para continuar sem sobrescrever dados.';}});
-function addMessage(text:string,user:boolean,source:'demo'|'local'='demo'){
+window.addEventListener('storage',event=>{
+ if(event.key!=='companheiro.friends.v1')return;
+ const hadPending=conversationRunner.busy;stopSession();cancelExecution();
+ try{
+  friends=new FriendsStore(localStorage,preferences.name);activeFriend=friends.current();messages=activeFriend?.messages??[];skills=activeFriend?.skills??[];activeTurn=messages.filter(m=>m.turn).at(-1)?.turn??null;if(activeTurn?.feedback!==undefined)activeTurn=null;preferences.name=activeFriend?.name??'Sem amigo';outputLabels=['Ouvir','Perguntar','Tirar dúvidas','Fazer',...skills.map(s=>s.name)];
+  live=new LiveNetwork(renderNetwork,activeFriend?new Brain(activeFriend.brain):undefined,audioEnergy);draftSteps=[];element('skill-form').hidden=true;cancelFriendForms();applyPreferences();renderFriends();renderMessages();renderSkills();buildNetwork();renderNetwork(live.snapshot());element('chat-status').textContent=hadPending?'A conversa foi atualizada. Envie sua mensagem novamente se necessário.':'';
+ }catch{friends=null;activeFriend=null;renderFriends();syncChatControls();element('chat-status').textContent='Não foi possível abrir este amigo. Atualize a página.';}
+});
+function addMessage(text:string,user:boolean,source:'demo'|'local'|'model'='demo'){
  const container=element('messages'),message=document.createElement('div');message.className=`message ${user?'user':'companion'}`;
  const byline=document.createElement('div');byline.className='message-byline';
  const author=document.createElement('span');author.textContent=user?'Você':preferences.name;if(!user)author.setAttribute('data-companion-name','');byline.append(author);
- if(!user){const note=document.createElement('span');note.className='message-type';note.textContent=source==='local'?'AÇÃO LOCAL':'RESPOSTA SIMULADA';byline.append(note);}
+ if(!user){const note=document.createElement('span');note.className='message-type';note.textContent=source==='local'?'AÇÃO LOCAL':source==='model'?'MODELO LOCAL · RESPOSTA EM TEXTO':'RESPOSTA SIMULADA';byline.append(note);}
  const bubble=document.createElement('div');bubble.className='bubble';bubble.textContent=text;message.append(byline,bubble);container.append(message);container.scrollTop=container.scrollHeight;
 }
-element('chat-form').addEventListener('submit',event=>{
- event.preventDefault();const input=element<HTMLInputElement>('chat-text'),text=input.value.trim();if(!text)return;
- if(!activeFriend)return;
- const reply='Estou aqui. Podemos ir uma coisa de cada vez.';messages.push({user:true,text},{user:false,text:reply});addMessage(text,true);input.value='';addMessage(reply,false);try{persistFriend();}catch(error){element('status').textContent=String(error);}
+element('teaching-dismiss').onclick=()=>{teachingProposal=null;element('teaching-proposal').hidden=true;};
+element('teaching-save').onclick=()=>{
+ const proposed=teachingProposal;if(!proposed||activeFriend?.id!==proposed.friendId||conversationRunner.busy)return;
+ try{const skill:Skill={...proposed.skill,id:'habilidade-'+(globalThis.crypto?.randomUUID?.()??Date.now().toString(36))};const nextSkills=validateSkills([...skills,skill]),brain=new Brain(live.brain.snapshot());brain.addAction(skill.id);brain.teachInput(proposed.features,brain.actionIds.length-1);friends!.save(brain.snapshot(),messages,nextSkills);skills=nextSkills;live.brain=brain;outputLabels=['Ouvir','Perguntar','Tirar dúvidas','Fazer',...skills.map(s=>s.name)];renderSkills();buildNetwork();live.refresh();teachingProposal=null;element('teaching-proposal').hidden=true;element('chat-status').textContent='Habilidade guardada para este amigo.';}catch{element('chat-status').textContent='Não consegui guardar essa habilidade. Descreva etapas mais simples.';}
+};
+function syncChatControls(){
+ const locked=conversationRunner.busy||!!activeTurn;
+ element<HTMLButtonElement>('chat-send').disabled=!activeFriend||conversationRunner.busy;
+ element('chat-cancel').hidden=!conversationRunner.busy;
+ if(conversationRunner.busy){for(const id of ['reward-good','reward-bad','review-selected'])element<HTMLButtonElement>(id).disabled=true;}
+ for(const id of ['input-source','demo-context','network-toggle','skill-new','teach'])element<HTMLButtonElement>(id).disabled=locked||!activeFriend||(id==='teach'&&live.source!=='demo')||(id==='skill-new'&&skills.length>=12);
+ if(voiceBusy)element('mic-status').textContent='Entendendo…';else if(conversationRunner.busy)element('mic-status').textContent='Respondendo…';else if(microphone?.state==='active')element('mic-status').textContent='Escutando';
+ element('session-toggle').textContent=sessionStarting?'Cancelar':sessionStarted||conversationRunner.busy?'Encerrar':'Iniciar companheiro';
+}
+function stopLocalModel(){if(typeof fetch==='function')localStop=fetch('/api/model/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',keepalive:true}).catch(()=>{});}
+function cancelConversation(){conversationRunner.cancel();stopLocalModel();if(live.source==='text')live.stop();syncChatControls();}
+element('chat-cancel').onclick=()=>{cancelConversation();element('chat-status').textContent='Resposta cancelada.';};
+
+function rateInteraction(reward:1|-1){
+ if(conversationRunner.busy)return;
+ if(!activeTurn){learning(()=>live.feedback(reward));return;}
+ const turn=activeTurn,backup=live.brain.snapshot();
+ try{applyTurnFeedback(live.brain,turn,reward);persistFriend();activeTurn=null;live.refresh();element('status').textContent='Avaliação salva para esta interação. Pesos atualizados.';}catch(error){live.brain=new Brain(backup);delete turn.feedback;element('status').textContent=String(error);}syncChatControls();
+}
+async function loadModelStatus(){
+ if(typeof fetch!=='function')return;
+ try{const response=await fetch('/api/model',{cache:'no-store'});if(!response.ok)throw Error();const data=await response.json();modelStatus={configured:data.configured===true,model:data.model??'',destination:data.destination??'',voiceAvailable:data.voiceAvailable===true};element('model-status').textContent=modelStatus.configured?'Modelo local experimental':'Modelo não conectado';element('model-description').textContent=modelStatus.configured?`${modelStatus.model} · somente localhost. Conversa local. Carrega ao iniciar ou enviar.`:'O modelo local não está disponível. Nenhuma resposta fixa substituirá o modelo.';}catch{element('model-status').textContent='Servidor de conversa indisponível';}syncChatControls();
+}
+element('chat-form').addEventListener('submit',async event=>{
+ event.preventDefault();const input=element<HTMLInputElement>('chat-text'),text=input.value.trim();if(!text||!activeFriend||conversationRunner.busy)return;
+ if(!modelStatus.configured){await loadModelStatus();if(!modelStatus.configured){element('chat-status').textContent='Não consegui conectar. Clique em Iniciar companheiro e tente novamente.';return;}}if(conversationRunner.busy)return;
+ if(messages.length>=99){element('chat-status').textContent='Limite local de 100 mensagens atingido. O histórico foi preservado; nenhuma mensagem foi enviada.';return;}
+ const speakResponse=voiceSubmission;voiceSubmission=false;
+ const friendId=activeFriend.id,id='turno-'+(globalThis.crypto?.randomUUID?.()??Date.now().toString(36));
+ const request:ConversationRequest={phase:'interpret',requestId:id,friendId,name:activeFriend.name,text,consent:true,candidates:live.brain.actionIds.map((action,i)=>({id:action,name:outputLabels[i]})),history:conversationHistory(messages)};
+ const previous=messages;messages=[...messages,{user:true,text,source:'model' as const}];
+ try{persistFriend();}catch(error){messages=previous;element('chat-status').textContent='Mensagem não enviada: '+String(error);return;}
+ sessionStarted=true;renderMessages();input.value='';activeTurn=null;cancelExecution();live.stop();const thisLive=live;
+ element('chat-status').textContent='Modelo interpretando; em seguida a rede escolhe e o modelo responde…';
+ const promise=conversationRunner.send(request,thisLive.brain,async(payload,signal)=>{
+  await localStop;if(signal.aborted)throw Error('Conversa cancelada.');const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal});const data=await response.json();if(!response.ok)throw Error(data.error||'Conversa indisponível.');return data;
+ },(features,signal)=>{if(activeFriend?.id!==friendId)throw Error('Amigo alterado.');element<HTMLSelectElement>('input-source').value='text';return thisLive.evaluateText(features,signal);});syncChatControls();
+ try{
+  const result=await promise;if(activeFriend?.id!==friendId)return;activeTurn=result.turn;messages=[...messages,{user:false,text:result.reply,source:'model' as const,turn:result.turn}];renderMessages();persistFriend();if(speakResponse&&microphone.state==='active'){const voice=window.speechSynthesis?.getVoices().find(v=>v.localService&&/^pt/i.test(v.lang));if(voice){const speech=new SpeechSynthesisUtterance(result.reply);speech.voice=voice;speech.onend=()=>{suppressVoiceUntil=Date.now()+500;};window.speechSynthesis.speak(speech);}}if(result.proposal){teachingProposal={skill:result.proposal,friendId,features:result.turn.features};element('teaching-description').textContent=`Guardar “${result.proposal.name}”? ${describePlan(result.proposal.plan)}`;element('teaching-proposal').hidden=false;}element('model-status').textContent='Modelo local conectado';element('chat-status').textContent='Resposta pronta. ＋ / − avaliam a decisão desta interação.';renderNetwork(live.snapshot());
+ }catch(error){if(activeFriend?.id===friendId){element('chat-status').textContent=(error instanceof Error&&error.name==='AbortError')?'Resposta cancelada.':String(error);live.stop();}}finally{syncChatControls();}
 });
-applyPreferences();renderFriends();renderMessages();renderSkills();if(activeFriend)live.start();else renderNetwork(live.snapshot());
-element('status').textContent=loadError||friends?.migration||'';
-const microphone=new MicrophoneSession(async()=>{
+applyPreferences();renderFriends();renderMessages();renderSkills();if(activeFriend&&!activeTurn)live.start();else renderNetwork(live.snapshot());
+element('status').textContent=loadError||friends?.migration||'';if(loadError)element('chat-status').textContent='Não consegui abrir seus amigos. Atualize a página.';
+microphone=new MicrophoneSession(async()=>{
  if(!navigator.mediaDevices?.getUserMedia)throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
  return navigator.mediaDevices.getUserMedia({audio:true,video:false});
 },(state,error)=>{
- const button=element<HTMLButtonElement>('session-toggle');button.textContent=state==='active'?'Encerrar':state==='starting'?'Cancelar':'Iniciar companheiro';
- element('mic-status').textContent=state==='active'?'Microfone ativo':state==='starting'?'Aguardando permissão…':'Desligado';
+ const button=element<HTMLButtonElement>('toggle-mic');button.textContent=state==='active'?'Desativar microfone':state==='starting'?'Cancelar microfone':'Ativar microfone (opcional)';
+ element('mic-status').textContent=state==='active'?'Escutando':state==='starting'?'Aguardando permissão do microfone…':sessionStarting?'Carregando modelo local…':sessionStarted?'Pronto para conversar':'Desligado';
  element('mic-dot').classList.toggle('active',state==='active');
  element('mic-error').hidden=!error;element('mic-error').textContent=error;
  if(state!=='active'){
   stopAudioAnalysis();
   const audioOption=element<HTMLSelectElement>('input-source').querySelector<HTMLOptionElement>('option[value="audio"]');if(audioOption)audioOption.disabled=true;
   if(live.source==='audio'){element<HTMLSelectElement>('input-source').value='idle';live.setSource('idle');}
-  if(state==='off'){cancelExecution();live.stop();}
+  if(state==='off'&&live.source==='audio'){live.setSource('idle');}
  }
- element('mic-note').textContent=state==='active'?'Captura local ativa nesta aba. Sem gravação, envio ou reconhecimento de voz.':'Microfone local. Sem gravação, envio ou reconhecimento de voz.';
+ element('mic-note').textContent=state==='active'?'Trechos temporários de áudio são transcritos neste computador.':'Microfone opcional; áudio temporário para transcrição neste computador.';
 });
-element('session-toggle').onclick=()=>{if(!activeFriend)return;const friendAtStart=activeFriend.id;if(microphone.state==='off'){
-  live.start();
+element('toggle-mic').onclick=()=>{if(!activeFriend)return;const friendAtStart=activeFriend.id;if(microphone.state==='off'){
+  if(!activeTurn)live.start();
   void microphone.start().then(()=>{
    const stream=microphone.getStream();if(!stream||activeFriend?.id!==friendAtStart)return;
    try{
     audioContext=new AudioContext();audioSource=audioContext.createMediaStreamSource(stream);analyser=audioContext.createAnalyser();analyser.fftSize=512;audioSamples=new Float32Array(512);audioSource.connect(analyser);
+    if(modelStatus.voiceAvailable){voiceSegmenter=new VoiceSegmenter(audioContext.sampleRate,wav=>{void sendVoice(wav);});voiceProcessor=audioContext.createScriptProcessor(4096,1,1);voiceGain=audioContext.createGain();voiceGain.gain.value=0;audioSource.connect(voiceProcessor);voiceProcessor.connect(voiceGain);voiceGain.connect(audioContext.destination);voiceProcessor.onaudioprocess=event=>{event.outputBuffer.getChannelData(0).fill(0);if(conversationRunner.busy||voiceBusy||Date.now()<suppressVoiceUntil||window.speechSynthesis?.speaking){voiceSegmenter?.reset();return;}voiceSegmenter?.push(event.inputBuffer.getChannelData(0));};}
     const created=audioContext;void audioContext.resume().catch(()=>{if(audioContext!==created)return;element('status').textContent='Análise de energia indisponível. A rede continua com entrada fixa.';stopAudioAnalysis();element<HTMLSelectElement>('input-source').value='idle';live.setSource('idle');});
     const option=element<HTMLSelectElement>('input-source').querySelector<HTMLOptionElement>('option[value="audio"]');if(option)option.disabled=false;
-    element<HTMLSelectElement>('input-source').value='audio';setInput();
+    if(!activeTurn){element<HTMLSelectElement>('input-source').value='audio';setInput();}
    }catch{stopAudioAnalysis();element('status').textContent='Análise de energia indisponível. A captura está ativa, sem interpretação de fala.';}
   });
  }else microphone.stop();};
-window.addEventListener('pagehide',()=>{cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();try{persistFriend();}catch{}});
-window.addEventListener('beforeunload',()=>{cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();try{persistFriend();}catch{}});
+async function sendVoice(wav:ArrayBuffer){
+ if(!activeFriend||voiceBusy||conversationRunner.busy)return;const id=activeFriend.id,generation=voiceGeneration;voiceBusy=true;const controller=new AbortController();voiceRequest=controller;element('mic-status').textContent='Entendendo…';
+ try{const response=await fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:wav,signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error);if(generation!==voiceGeneration||activeFriend?.id!==id)return;const text=String(data.text||'').trim();if(text&&!conversationRunner.busy){voiceSubmission=true;element<HTMLInputElement>('chat-text').value=text;element<HTMLFormElement>('chat-form').requestSubmit();}else if(!text)element('chat-status').textContent='Não entendi. Pode repetir ou digitar?';}
+ catch(error){if(!controller.signal.aborted&&generation===voiceGeneration)element('chat-status').textContent='Não entendi. Pode repetir ou digitar?';}
+ finally{if(generation===voiceGeneration){voiceBusy=false;voiceRequest=null;element('mic-status').textContent=conversationRunner.busy?'Respondendo…':microphone.state==='active'?'Escutando':'Pronto para conversar';}}
+}
+function stopSession(){window.speechSynthesis?.cancel();sessionStarted=false;sessionStarting=false;startController?.abort();startController=null;cancelConversation();microphone?.stop();live.stop();stopAudioAnalysis();element('mic-status').textContent='Desligado';syncChatControls();}
+element('session-toggle').onclick=async()=>{
+ if(sessionStarted||sessionStarting||conversationRunner.busy){stopSession();return;}if(!activeFriend)return;
+ sessionStarting=true;startController=new AbortController();const controller=startController;const id=activeFriend.id;element('mic-status').textContent='Carregando modelo local…';syncChatControls();
+ try{await localStop;const response=await fetch('/api/model/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error||'Não foi possível iniciar o modelo local.');if(controller.signal.aborted||activeFriend?.id!==id)return;sessionStarted=true;element('mic-status').textContent='Pronto para conversar';element('model-status').textContent='Modelo local conectado';if(!activeTurn)live.start();if(modelStatus.voiceAvailable&&microphone.state==='off')element('toggle-mic').click();}
+ catch(error){if(activeFriend?.id===id){element('mic-status').textContent='Desligado';element('chat-status').textContent=controller.signal.aborted?'Início cancelado.':String(error);}}
+ finally{if(startController===controller){startController=null;sessionStarting=false;}syncChatControls();}
+};
+window.addEventListener('pagehide',()=>{stopSession();cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();try{persistFriend();}catch{}});
+window.addEventListener('beforeunload',()=>{stopSession();cancelExecution();microphone.stop();live.stop();stopAudioAnalysis();try{persistFriend();}catch{}});
+
+void loadModelStatus();

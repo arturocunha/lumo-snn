@@ -1,6 +1,7 @@
+import {validateTurn,type ConversationTurn} from './conversation.js';
 import {validateSkills,baseActionIds,type Skill} from './skills.js';
 import {Brain,validateProfile,type Profile} from './core.js';
-export interface ChatMessage {user:boolean;text:string;source?:'demo'|'local'}
+export interface ChatMessage {user:boolean;text:string;source?:'demo'|'local'|'model';turn?:ConversationTurn}
 export interface Friend {id:string;name:string;brain:Profile;messages:ChatMessage[];skills:Skill[]}
 export interface FriendsData {version:1|2|3;revision:number;active:string|null;friends:Friend[];migratedFriend?:string}
 export const maxFriends=3;
@@ -12,7 +13,7 @@ function friendName(value:unknown){if(typeof value!=='string'||!value.trim()||Ar
 export function validFriends(value:unknown):FriendsData {
  const data=value as FriendsData;
  if(!data||![1,2,3].includes(data.version)||!Number.isSafeInteger(data.revision)||data.revision<0||!Array.isArray(data.friends)||!(data.active===null||typeof data.active==='string'))throw Error('Dados de amigos inválidos. Nada foi substituído.');
- const ids=new Set();for(const friend of data.friends){if(!friend||typeof friend.id!=='string'||!friend.id||ids.has(friend.id))throw Error('Amigo inválido');ids.add(friend.id);friendName(friend.name);friend.brain=validateProfile(friend.brain);friend.skills=validateSkills(friend.skills??[]);if(friend.brain.actionIds!.join(',')!==[...baseActionIds,...friend.skills.map(s=>s.id)].join(','))throw Error('Habilidades e rede não correspondem.');if(!Array.isArray(friend.messages)||friend.messages.some(m=>!m||typeof m.user!=='boolean'||typeof m.text!=='string'||m.text.length>10000||(m.source!==undefined&&!['demo','local'].includes(m.source))))throw Error('Conversa inválida');}
+ const ids=new Set();for(const friend of data.friends){if(!friend||typeof friend.id!=='string'||!friend.id||ids.has(friend.id))throw Error('Amigo inválido');ids.add(friend.id);friendName(friend.name);friend.brain=validateProfile(friend.brain);friend.skills=validateSkills(friend.skills??[]);if(friend.brain.actionIds!.join(',')!==[...baseActionIds,...friend.skills.map(s=>s.id)].join(','))throw Error('Habilidades e rede não correspondem.');if(!Array.isArray(friend.messages)||friend.messages.some(m=>!m||typeof m.user!=='boolean'||typeof m.text!=='string'||m.text.length>10000||(m.source!==undefined&&!['demo','local','model'].includes(m.source))))throw Error('Conversa inválida');for(const message of friend.messages)if(message.turn)validateTurn(message.turn,friend.id,friend.brain.actionIds!);}
  if(data.active!==null&&!ids.has(data.active))throw Error('Amigo atual inválido');
  return JSON.parse(JSON.stringify({...data,version:3}));
 }

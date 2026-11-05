@@ -26,7 +26,7 @@ export function validateProfile(value:unknown): Profile {
  if(JSON.stringify(p.reservoir)!==JSON.stringify(reservoirConfig)||!Array.isArray(p.readoutWeights)||p.readoutWeights.length!==p.weights.length||p.readoutWeights.some(row=>!Array.isArray(row)||row.length!==192||row.some(w=>!Number.isFinite(w)||w<0||w>1)))throw Error('Readout ou configuração do reservatório inválidos');p.temporal=validReservoirState(p.temporal);
  const ids=p.actionIds;if(!Array.isArray(ids)||ids.length!==p.weights.length||new Set(ids).size!==ids.length||ids.some(id=>typeof id!=='string'||!id)||actions.some((id,i)=>ids[i]!==id))throw Error('Catálogo da rede inválido');
  for(const [context,entries]of Object.entries(p.evidence)){
-  if((!Object.hasOwn(contexts,context)&&context!=='Áudio local')||!entries||typeof entries!=='object'||Array.isArray(entries))throw Error('Evidências inválidas');
+  if((!Object.hasOwn(contexts,context)&&context!=='Áudio local'&&context!=='Conversa textual')||!entries||typeof entries!=='object'||Array.isArray(entries))throw Error('Evidências inválidas');
   for(const [action,counts]of Object.entries(entries))if(!/^(0|[1-9][0-9]*)$/.test(action)||Number(action)>=p.weights.length||!Array.isArray(counts)||counts.length!==2||counts.some(n=>!Number.isSafeInteger(n)||n<0))throw Error('Feedback inválido');
  }
  return p;
@@ -78,11 +78,19 @@ export class Brain {
   const scale=Math.max(...trace,1e-9);
   this.weights[target]=this.weights[target].map((w,i)=>Math.min(1,Math.max(0,w+.075*reward*trace[i]/scale)));let hidden=r.hiddenEligibility[target];if(!hidden.some(Boolean))hidden=r.hiddenActivity;const hiddenScale=Math.max(...hidden,1e-9);this.readoutWeights[target]=this.readoutWeights[target].map((w,n)=>Math.max(0,Math.min(1,w+.10*reward*hidden[n]/hiddenScale)));this.updates++;
  }
+ rewardTrace(target:number,inputTrace:number[],hiddenTrace:number[],reward:1|-1,context:string){
+  if(!Number.isInteger(target)||target<0||target>=this.weights.length||![1,-1].includes(reward)||inputTrace.length!==6||hiddenTrace.length!==192||[...inputTrace,...hiddenTrace].some(n=>!Number.isFinite(n)||n<0||n>10000)||context!=='Conversa textual')throw Error('Feedback de interação inválido');
+  const scale=Math.max(...inputTrace,1e-9),hiddenScale=Math.max(...hiddenTrace,1e-9);
+  this.weights[target]=this.weights[target].map((w,i)=>Math.max(0,Math.min(1,w+.075*reward*inputTrace[i]/scale)));
+  this.readoutWeights[target]=this.readoutWeights[target].map((w,i)=>Math.max(0,Math.min(1,w+.10*reward*hiddenTrace[i]/hiddenScale)));this.updates++;
+  const entries=this.evidence[context]??(this.evidence[context]={}),counts=entries[String(target)]??(entries[String(target)]=[0,0]);counts[reward>0?0:1]++;
+ }
  feedback(reward:number){
   if(!this.pending||![1,-1].includes(reward))throw Error('Avalie novamente antes de dar feedback');
   const r=this.pending;this.plasticity(r,r.choice,reward);
   const entries=this.evidence[r.context]??(this.evidence[r.context]={});const record=entries[String(r.choice)]??(entries[String(r.choice)]=[0,0]);record[reward>0?0:1]++;this.pending=null;
  }
+ teachInput(input:number[],target:number){if(!Number.isInteger(target)||target<0||target>=this.weights.length)throw Error('Habilidade inválida');this.plasticity(this.run(input),target,1);this.pending=null;}
  teach(context:string,target:number){
   if(!Object.hasOwn(contexts,context)||!Number.isInteger(target)||target<0||target>=this.weights.length)throw Error('Exemplo inválido');
   this.plasticity(this.run(contexts[context]),target,1);this.pending=null;

@@ -1,0 +1,116 @@
+{
+  "model": "Qwen3-0.6B Q4_K_M",
+  "runtime": "llama.cpp b12032 CPU, 4 threads, contexto 3072, batch128/ubatch64",
+  "syntheticOnly": true,
+  "cases": [
+    {
+      "text": "Quanto é 7 + 5?",
+      "reply": "7 + 5 = 12",
+      "features": [
+        1,
+        1,
+        1,
+        0,
+        1,
+        0
+      ],
+      "suggestedIds": [
+        "fazer"
+      ],
+      "choiceId": "tirar_duvidas",
+      "phases": [
+        {
+          "phase": "interpret",
+          "ms": 3578.5
+        },
+        {
+          "phase": "snn",
+          "ms": 1617.3
+        },
+        {
+          "phase": "respond",
+          "ms": 654.5
+        }
+      ],
+      "totalMs": 5852.3,
+      "weightsChanged": true,
+      "feedback": 1,
+      "traceId": "teste-local-1"
+    },
+    {
+      "text": "Isso não funciona, me ajuda.",
+      "reply": "Por que isso não funciona?",
+      "features": [
+        1,
+        1,
+        0,
+        1,
+        1,
+        0
+      ],
+      "suggestedIds": [
+        "ouvir"
+      ],
+      "choiceId": "tirar_duvidas",
+      "phases": [
+        {
+          "phase": "interpret",
+          "ms": 2462.1
+        },
+        {
+          "phase": "snn",
+          "ms": 1633.1
+        },
+        {
+          "phase": "respond",
+          "ms": 639.7
+        }
+      ],
+      "totalMs": 4735.7,
+      "weightsChanged": true,
+      "feedback": -1,
+      "traceId": "teste-local-2"
+    },
+    {
+      "text": "Estou ocupado. Espere um pouco.",
+      "reply": "aguardando",
+      "features": [
+        1,
+        1,
+        0,
+        1,
+        0,
+        1
+      ],
+      "suggestedIds": [
+        "ouvir"
+      ],
+      "choiceId": "ouvir",
+      "phases": [
+        {
+          "phase": "interpret",
+          "ms": 1941.6
+        },
+        {
+          "phase": "snn",
+          "ms": 1611.2
+        },
+        {
+          "phase": "respond",
+          "ms": 541.3
+        }
+      ],
+      "totalMs": 4094.9,
+      "weightsChanged": true,
+      "feedback": -1,
+      "traceId": "teste-local-3"
+    }
+  ],
+  "memory": {
+    "RssKiB": 1122964,
+    "PssKiB": 1117230,
+    "SwapKiB": 0
+  },
+  "limitations": "Amostra pequena, não benchmark. Interpretação e fatos podem falhar. Não é compreensão ou raciocínio da SNN.",
+  "loadMs": 1148.719646
+}

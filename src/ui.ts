@@ -271,7 +271,7 @@ applyPreferences();renderFriends();renderMessages();renderSkills();if(activeFrie
 element('status').textContent=loadError||friends?.migration||'';if(loadError)element('chat-status').textContent='Não consegui abrir seus amigos. Atualize a página.';
 microphone=new MicrophoneSession(async()=>{
  if(!navigator.mediaDevices?.getUserMedia)throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
- return navigator.mediaDevices.getUserMedia({audio:true,video:false});
+ return navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
 },(state,error)=>{
  const button=element<HTMLButtonElement>('toggle-mic');button.textContent=state==='active'?'Desativar microfone':state==='starting'?'Cancelar microfone':'Ativar microfone (opcional)';
  element('mic-status').textContent=state==='active'?'Escutando':state==='starting'?'Aguardando permissão do microfone…':sessionStarting?'Carregando modelo local…':sessionStarted?'Pronto para conversar':'Desligado';
@@ -285,22 +285,22 @@ microphone=new MicrophoneSession(async()=>{
  }
  element('mic-note').textContent=state==='active'?'Trechos temporários de áudio são transcritos neste computador.':'Microfone opcional; áudio temporário para transcrição neste computador.';
 });
-element('toggle-mic').onclick=()=>{if(!activeFriend)return;const friendAtStart=activeFriend.id;if(microphone.state==='off'){
+element('toggle-mic').onclick=async()=>{if(microphone.state!=='off'){microphone.stop();return;}if(!activeFriend)return;const requestedFriendId=activeFriend.id,requestedGeneration=voiceGeneration;await loadModelStatus();if(activeFriend?.id!==requestedFriendId||voiceGeneration!==requestedGeneration||microphone.state!=='off')return;if(!modelStatus.voiceAvailable){element('mic-error').hidden=false;element('mic-error').textContent='Não consegui preparar a voz. Você ainda pode digitar.';return;}const friendAtStart=activeFriend.id;if(microphone.state==='off'){
   if(!activeTurn)live.start();
   void microphone.start().then(()=>{
    const stream=microphone.getStream();if(!stream||activeFriend?.id!==friendAtStart)return;
    try{
-    audioContext=new AudioContext();audioSource=audioContext.createMediaStreamSource(stream);analyser=audioContext.createAnalyser();analyser.fftSize=512;audioSamples=new Float32Array(512);audioSource.connect(analyser);
+    try{audioContext=new AudioContext({sampleRate:16000});}catch{audioContext=new AudioContext();}audioSource=audioContext.createMediaStreamSource(stream);analyser=audioContext.createAnalyser();analyser.fftSize=512;audioSamples=new Float32Array(512);audioSource.connect(analyser);
     if(modelStatus.voiceAvailable){voiceSegmenter=new VoiceSegmenter(audioContext.sampleRate,wav=>{void sendVoice(wav);});voiceProcessor=audioContext.createScriptProcessor(4096,1,1);voiceGain=audioContext.createGain();voiceGain.gain.value=0;audioSource.connect(voiceProcessor);voiceProcessor.connect(voiceGain);voiceGain.connect(audioContext.destination);voiceProcessor.onaudioprocess=event=>{event.outputBuffer.getChannelData(0).fill(0);if(conversationRunner.busy||voiceBusy||Date.now()<suppressVoiceUntil||window.speechSynthesis?.speaking){voiceSegmenter?.reset();return;}voiceSegmenter?.push(event.inputBuffer.getChannelData(0));};}
-    const created=audioContext;void audioContext.resume().catch(()=>{if(audioContext!==created)return;element('status').textContent='Análise de energia indisponível. A rede continua com entrada fixa.';stopAudioAnalysis();element<HTMLSelectElement>('input-source').value='idle';live.setSource('idle');});
+    const created=audioContext;void audioContext.resume().catch(()=>{if(audioContext!==created)return;microphone.stop();element('mic-error').hidden=false;element('mic-error').textContent='Não consegui iniciar a escuta. Você ainda pode digitar.';stopAudioAnalysis();element<HTMLSelectElement>('input-source').value='idle';live.setSource('idle');});
     const option=element<HTMLSelectElement>('input-source').querySelector<HTMLOptionElement>('option[value="audio"]');if(option)option.disabled=false;
     if(!activeTurn){element<HTMLSelectElement>('input-source').value='audio';setInput();}
-   }catch{stopAudioAnalysis();element('status').textContent='Análise de energia indisponível. A captura está ativa, sem interpretação de fala.';}
+   }catch{stopAudioAnalysis();microphone.stop();element('mic-error').hidden=false;element('mic-error').textContent='Não consegui iniciar a escuta. Você ainda pode digitar.';}
   });
  }else microphone.stop();};
 async function sendVoice(wav:ArrayBuffer){
  if(!activeFriend||voiceBusy||conversationRunner.busy)return;const id=activeFriend.id,generation=voiceGeneration;voiceBusy=true;const controller=new AbortController();voiceRequest=controller;element('mic-status').textContent='Entendendo…';
- try{const response=await fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:wav,signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error);if(generation!==voiceGeneration||activeFriend?.id!==id)return;const text=String(data.text||'').trim();if(text&&!conversationRunner.busy){voiceSubmission=true;element<HTMLInputElement>('chat-text').value=text;element<HTMLFormElement>('chat-form').requestSubmit();}else if(!text)element('chat-status').textContent='Não entendi. Pode repetir ou digitar?';}
+ try{const response=await fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:wav,signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error);if(generation!==voiceGeneration||activeFriend?.id!==id)return;const text=String(data.text||'').trim();if(text&&!conversationRunner.busy){const draft=element<HTMLInputElement>('chat-text');if(draft.value.trim()){draft.value+=' '+text;element('chat-status').textContent='Acrescentei a fala ao texto. Envie quando quiser.';return;}const details=element('conversation').querySelector('details');if(details)details.open=true;voiceSubmission=true;element<HTMLInputElement>('chat-text').value=text;element<HTMLFormElement>('chat-form').requestSubmit();}else if(!text)element('chat-status').textContent='Não entendi. Pode repetir ou digitar?';}
  catch(error){if(!controller.signal.aborted&&generation===voiceGeneration)element('chat-status').textContent='Não entendi. Pode repetir ou digitar?';}
  finally{if(generation===voiceGeneration){voiceBusy=false;voiceRequest=null;element('mic-status').textContent=conversationRunner.busy?'Respondendo…':microphone.state==='active'?'Escutando':'Pronto para conversar';}}
 }
@@ -308,7 +308,7 @@ function stopSession(){window.speechSynthesis?.cancel();sessionStarted=false;ses
 element('session-toggle').onclick=async()=>{
  if(sessionStarted||sessionStarting||conversationRunner.busy){stopSession();return;}if(!activeFriend)return;
  sessionStarting=true;startController=new AbortController();const controller=startController;const id=activeFriend.id;element('mic-status').textContent='Carregando modelo local…';syncChatControls();
- try{await localStop;const response=await fetch('/api/model/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error||'Não foi possível iniciar o modelo local.');if(controller.signal.aborted||activeFriend?.id!==id)return;sessionStarted=true;element('mic-status').textContent='Pronto para conversar';element('model-status').textContent='Modelo local conectado';if(!activeTurn)live.start();if(modelStatus.voiceAvailable&&microphone.state==='off')element('toggle-mic').click();}
+ try{await localStop;const response=await fetch('/api/model/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});const data=await response.json();if(!response.ok)throw Error(data.error||'Não foi possível iniciar o modelo local.');if(controller.signal.aborted||activeFriend?.id!==id)return;await loadModelStatus();if(controller.signal.aborted||activeFriend?.id!==id)return;sessionStarted=true;element('mic-status').textContent='Pronto para conversar';element('model-status').textContent='Modelo local conectado';if(!activeTurn)live.start();if(modelStatus.voiceAvailable&&microphone.state==='off')element('toggle-mic').click();}
  catch(error){if(activeFriend?.id===id){element('mic-status').textContent='Desligado';element('chat-status').textContent=controller.signal.aborted?'Início cancelado.':String(error);}}
  finally{if(startController===controller){startController=null;sessionStarting=false;}syncChatControls();}
 };

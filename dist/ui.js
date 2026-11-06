@@ -735,7 +735,7 @@ if (loadError)
 microphone = new MicrophoneSession(async () => {
     if (!navigator.mediaDevices?.getUserMedia)
         throw Error('Captura de microfone indisponível. Abra esta página em localhost ou HTTPS em um navegador compatível.');
-    return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    return navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
 }, (state, error) => {
     const button = element('toggle-mic');
     button.textContent = state === 'active' ? 'Desativar microfone' : state === 'starting' ? 'Cancelar microfone' : 'Ativar microfone (opcional)';
@@ -758,9 +758,22 @@ microphone = new MicrophoneSession(async () => {
     }
     element('mic-note').textContent = state === 'active' ? 'Trechos temporários de áudio são transcritos neste computador.' : 'Microfone opcional; áudio temporário para transcrição neste computador.';
 });
-element('toggle-mic').onclick = () => {
+element('toggle-mic').onclick = async () => {
+    if (microphone.state !== 'off') {
+        microphone.stop();
+        return;
+    }
     if (!activeFriend)
         return;
+    const requestedFriendId = activeFriend.id, requestedGeneration = voiceGeneration;
+    await loadModelStatus();
+    if (activeFriend?.id !== requestedFriendId || voiceGeneration !== requestedGeneration || microphone.state !== 'off')
+        return;
+    if (!modelStatus.voiceAvailable) {
+        element('mic-error').hidden = false;
+        element('mic-error').textContent = 'Não consegui preparar a voz. Você ainda pode digitar.';
+        return;
+    }
     const friendAtStart = activeFriend.id;
     if (microphone.state === 'off') {
         if (!activeTurn)
@@ -770,7 +783,12 @@ element('toggle-mic').onclick = () => {
             if (!stream || activeFriend?.id !== friendAtStart)
                 return;
             try {
-                audioContext = new AudioContext();
+                try {
+                    audioContext = new AudioContext({ sampleRate: 16000 });
+                }
+                catch {
+                    audioContext = new AudioContext();
+                }
                 audioSource = audioContext.createMediaStreamSource(stream);
                 analyser = audioContext.createAnalyser();
                 analyser.fftSize = 512;
@@ -791,7 +809,7 @@ element('toggle-mic').onclick = () => {
                 }
                 const created = audioContext;
                 void audioContext.resume().catch(() => { if (audioContext !== created)
-                    return; element('status').textContent = 'Análise de energia indisponível. A rede continua com entrada fixa.'; stopAudioAnalysis(); element('input-source').value = 'idle'; live.setSource('idle'); });
+                    return; microphone.stop(); element('mic-error').hidden = false; element('mic-error').textContent = 'Não consegui iniciar a escuta. Você ainda pode digitar.'; stopAudioAnalysis(); element('input-source').value = 'idle'; live.setSource('idle'); });
                 const option = element('input-source').querySelector('option[value="audio"]');
                 if (option)
                     option.disabled = false;
@@ -802,7 +820,9 @@ element('toggle-mic').onclick = () => {
             }
             catch {
                 stopAudioAnalysis();
-                element('status').textContent = 'Análise de energia indisponível. A captura está ativa, sem interpretação de fala.';
+                microphone.stop();
+                element('mic-error').hidden = false;
+                element('mic-error').textContent = 'Não consegui iniciar a escuta. Você ainda pode digitar.';
             }
         });
     }
@@ -826,6 +846,15 @@ async function sendVoice(wav) {
             return;
         const text = String(data.text || '').trim();
         if (text && !conversationRunner.busy) {
+            const draft = element('chat-text');
+            if (draft.value.trim()) {
+                draft.value += ' ' + text;
+                element('chat-status').textContent = 'Acrescentei a fala ao texto. Envie quando quiser.';
+                return;
+            }
+            const details = element('conversation').querySelector('details');
+            if (details)
+                details.open = true;
             voiceSubmission = true;
             element('chat-text').value = text;
             element('chat-form').requestSubmit();
@@ -865,6 +894,9 @@ element('session-toggle').onclick = async () => {
         const data = await response.json();
         if (!response.ok)
             throw Error(data.error || 'Não foi possível iniciar o modelo local.');
+        if (controller.signal.aborted || activeFriend?.id !== id)
+            return;
+        await loadModelStatus();
         if (controller.signal.aborted || activeFriend?.id !== id)
             return;
         sessionStarted = true;

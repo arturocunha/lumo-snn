@@ -9,6 +9,8 @@
     "start": "npm run preview",
     "preview": "node scripts/preview.mjs",
     "install:model": "sh scripts/install-local-model.sh",
-    "test:model": "node scripts/test-local-model.mjs"
+    "test:model": "node scripts/test-local-model.mjs",
+    "install:voice": "sh scripts/install-local-voice.sh",
+    "test:voice": "node scripts/test-local-voice.mjs"
   }
 }

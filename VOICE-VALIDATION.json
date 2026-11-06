@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-05",
+  "model": "Whisper small Q5_1; CPU 4 threads",
+  "source": "Áudios públicos conhecidos; nenhum microfone pessoal utilizado",
+  "cases": [
+    {
+      "file": "natural-0.wav",
+      "source": "https://huggingface.co/datasets/PolyAI/minds14",
+      "row": 0,
+      "audioSeconds": 9.045375,
+      "referenceWords": 20,
+      "wordEdits": 7,
+      "elapsedMs": 8236.2,
+      "transcriptionPreview": "Bom dia, estou a ligar para que você"
+    },
+    {
+      "file": "natural-1.wav",
+      "source": "https://huggingface.co/datasets/PolyAI/minds14",
+      "row": 1,
+      "audioSeconds": 4.693375,
+      "referenceWords": 9,
+      "wordEdits": 2,
+      "elapsedMs": 7592.1,
+      "transcriptionPreview": "Como faço para transferir minha herpã à minha"
+    },
+    {
+      "file": "br-17.wav",
+      "source": "https://huggingface.co/datasets/freds0/BRSpeech",
+      "row": 17,
+      "audioSeconds": 4.4,
+      "referenceWords": 8,
+      "wordEdits": 0,
+      "elapsedMs": 10080.9,
+      "transcriptionPreview": "Assim, este frango que eu almocei agora mesmo."
+    }
+  ],
+  "conversation": {
+    "reply": "Responda com a descrição do frango que você almoçou",
+    "choice": "tirar_duvidas",
+    "modelSuggestion": [
+      "fazer"
+    ],
+    "weightsChanged": true,
+    "persistedFeedback": 1,
+    "neuralTimerStopped": true
+  },
+  "temporaryFilesClean": true
+}

@@ -109,3 +109,7 @@ Ainda não há compreensão de voz, personalidade textual completa, memória sem
 ## Próximos passos
 
 Melhorar a qualidade da conversa, avaliar o aprendizado ao longo de interações mais extensas e evoluir a presença do companheiro no desktop, mantendo clara a diferença entre sugestão, decisão e execução.
+
+## Retomada da voz
+
+A entrada de voz em português foi revisada e testada com gravações públicas, sem usar o microfone pessoal. Veja [VOZ-LOCAL.md](VOZ-LOCAL.md) e [o relatório do teste real](VOICE-VALIDATION.json). A transcrição ainda pode errar palavras; o teste no microfone do usuário continua necessário. O texto permanece independente do microfone.

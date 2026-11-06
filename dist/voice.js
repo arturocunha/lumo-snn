@@ -1,5 +1,7 @@
 /** Segmentos curtos em RAM. Silêncio encerra fala; nenhum áudio é armazenado no navegador. */
 export function encodePcmWav(samples, sampleRate) {
+    if (!Number.isFinite(sampleRate) || sampleRate < 8000 || sampleRate > 192000)
+        throw Error('Taxa de áudio inválida.');
     const length = Math.floor(samples.length * 16000 / sampleRate), buffer = new ArrayBuffer(44 + length * 2), view = new DataView(buffer);
     const ascii = (offset, text) => { for (let i = 0; i < text.length; i++)
         view.setUint8(offset + i, text.charCodeAt(i)); };
@@ -29,24 +31,37 @@ export class VoiceSegmenter {
     length = 0;
     quiet = 0;
     voiced = 0;
+    preRoll = [];
     constructor(sampleRate, emit) {
         this.sampleRate = sampleRate;
         this.emit = emit;
     }
-    reset() { this.chunks = []; this.length = 0; this.quiet = 0; this.voiced = 0; }
+    reset() { this.chunks = []; this.length = 0; this.quiet = 0; this.voiced = 0; this.preRoll = []; }
     push(block) {
+        if (!block.length)
+            return;
         let square = 0;
         for (const n of block)
             square += n * n;
         const rms = Math.sqrt(square / block.length), duration = block.length / this.sampleRate;
-        if (rms > .015) {
+        if (!this.length) {
+            this.preRoll.push(new Float32Array(block));
+            while (this.preRoll.length > 1 && this.preRoll.reduce((sum, part) => sum + part.length, 0) > this.sampleRate * .2)
+                this.preRoll.shift();
+            if (rms <= .008)
+                return;
+            for (const part of this.preRoll.slice(0, -1)) {
+                this.chunks.push(part);
+                this.length += part.length;
+            }
+            this.preRoll = [];
+        }
+        if (rms > .008) {
             this.voiced += duration;
             this.quiet = 0;
         }
-        else if (this.length)
-            this.quiet += duration;
         else
-            return;
+            this.quiet += duration;
         this.chunks.push(new Float32Array(block));
         this.length += block.length;
         if (this.quiet >= .7 || this.length / this.sampleRate >= 10) {

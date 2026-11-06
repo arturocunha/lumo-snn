@@ -1,0 +1,17 @@
+import {readFileSync,writeFileSync,readdirSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {performance} from 'node:perf_hooks';
+import {Brain} from '../dist/core.js';import {LiveNetwork} from '../dist/live.js';import {TextConversation,applyTurnFeedback} from '../dist/conversation.js';import {FriendsStore} from '../dist/friends.js';
+const dir=fileURLToPath(new URL('../../../work/local-voice/',import.meta.url));
+const origin='http://127.0.0.1:4173';const headers={Origin:origin};
+const report={date:'2026-11-05',model:'Whisper small Q5_1; CPU 4 threads',source:'Áudios públicos conhecidos; nenhum microfone pessoal utilizado',cases:[],conversation:null};
+const words=text=>text.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().match(/[a-z0-9]+/g)??[];
+function edit(a,b){let row=Array.from({length:b.length+1},(_,i)=>i);for(let i=0;i<a.length;i++){const next=[i+1];for(let j=0;j<b.length;j++)next.push(Math.min(next[j]+1,row[j+1]+1,row[j]+(a[i]!==b[j])));row=next;}return row[b.length];}
+let lastTranscript='';
+const fixtures=[...JSON.parse(readFileSync(dir+'natural-reference.json','utf8')),...JSON.parse(readFileSync(dir+'br-reference.json','utf8')).filter(r=>r.row===17)];
+for(const fixture of fixtures){const start=performance.now();const response=await fetch(origin+'/api/transcribe',{method:'POST',headers:{...headers,'Content-Type':'application/octet-stream'},body:readFileSync(dir+fixture.file)});const result=await response.json();if(!response.ok)throw Error(result.error);lastTranscript=result.text;const expected=words(fixture.reference),actual=words(result.text);report.cases.push({file:fixture.file,source:fixture.source,row:fixture.row,audioSeconds:fixture.seconds,transcriptionPreview:result.text.split(/\s+/).slice(0,8).join(' '),referenceWords:expected.length,wordEdits:edit(expected,actual),elapsedMs:+(performance.now()-start).toFixed(1)});}
+const values=new Map(),store=new FriendsStore({getItem:k=>values.get(k)??null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)},'Amigo de teste');const friend=store.current(),brain=new Brain(friend.brain),live=new LiveNetwork(()=>{},brain),runner=new TextConversation();const text=lastTranscript,request={phase:'interpret',requestId:'teste-voz-'+Date.now(),friendId:friend.id,name:friend.name,text,consent:true,history:[],candidates:brain.actionIds.map((id,i)=>({id,name:['Ouvir','Perguntar','Tirar dúvidas','Fazer'][i]}))};
+const result=await runner.send(request,brain,async(payload,signal)=>{const response=await fetch(origin+'/api/chat',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(payload),signal});const body=await response.json();if(!response.ok)throw Error(body.error);return body;},(input,signal)=>live.evaluateText(input,signal));const before=brain.snapshot();applyTurnFeedback(brain,result.turn,1);store.save(brain.snapshot(),[{user:true,text,source:'model'},{user:false,text:result.reply,source:'model',turn:result.turn}]);
+report.conversation={reply:result.reply,choice:result.turn.choiceId,modelSuggestion:result.turn.suggestedIds,weightsChanged:JSON.stringify(before.weights)!==JSON.stringify(brain.weights),persistedFeedback:store.current().messages[1].turn.feedback,neuralTimerStopped:!live.snapshot().running};
+report.temporaryFilesClean=!readdirSync('/dev/shm').some(name=>name.startsWith('companheiro-voz-'));
+writeFileSync('VOICE-VALIDATION.json',JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));

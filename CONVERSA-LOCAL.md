@@ -63,3 +63,7 @@ Os testes automatizados cobrem esquema inválido, erro, timeout, cancelamento, a
 A porta 4173 estava atendida pela versão antiga do servidor, que ainda não tinha `/api/model` e `/api/chat`, enquanto os arquivos da interface já estavam mudando. Foi reiniciada com o backend atual. Também foi ajustado o CSP para permitir apenas conexões ao próprio servidor (`connect-src self`), necessárias ao proxy local; permanece sem conexão direta do navegador ao modelo ou a serviços externos. O botão principal agora inicia TEXTO, e o microfone tem controle opcional separado.
 
 Após a correção, `/api/model/start` respondeu `ready:true` e `/api/model/stop` respondeu `stopped:true` no servidor real. Uma instância headless separada do navegador carregou HTML/JS de verdade e exibiu “Modelo local experimental”, rede ativa e o botão principal, sem erros JS/CSP detectados. Não abriu janela visível nem acessou dados do navegador pessoal. O teste de botão usa mocks para garantir que início textual não chama `getUserMedia`; não houve teste automático do microfone físico.
+
+## Atualização em 5 de novembro
+
+As afirmações anteriores sobre ausência de transcrição descrevem a entrega anterior. A revisão atual integra Whisper small quantizado; consulte [VOZ-LOCAL.md](VOZ-LOCAL.md). Não há envio de áudio para provedores, reconhecimento por serviço remoto ou necessidade de microfone para digitar.
